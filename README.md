@@ -19,6 +19,8 @@ AutoCAD(およびBricsCAD)で使用されるAutoLISP言語のLanguage Server Pro
 ## ビルド
 
 ```sh
+cargo install --path .
+#または
 cargo build --release
 ```
 
