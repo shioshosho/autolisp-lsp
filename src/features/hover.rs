@@ -6,7 +6,18 @@ use crate::document::Document;
 
 pub fn hover(doc: &Document, position: Position) -> Option<Hover> {
     let offset = doc.position_to_offset(position);
-    let name = doc.symbols.symbol_at_offset(offset)?;
+
+    // Try symbol table first, fall back to raw text extraction
+    // (keywords like `defun`, `lambda`, `if` are consumed by the parser
+    // into special AST nodes and won't appear in the symbol table)
+    let name_from_table = doc.symbols.symbol_at_offset(offset);
+    let name_from_text;
+    let name: &str = if let Some(n) = name_from_table {
+        n
+    } else {
+        name_from_text = doc.word_at_offset(offset)?.to_uppercase();
+        &name_from_text
+    };
 
     // Check built-in functions first
     if let Some(builtin) = builtins::lookup(name) {

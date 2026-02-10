@@ -70,6 +70,36 @@ impl Document {
         self.line_offsets.len()
     }
 
+    /// Extract the word (symbol-like token) at the given byte offset from raw text.
+    /// This is used as a fallback when symbol_at_offset doesn't find anything
+    /// (e.g., for keywords like `defun` that the parser consumes into special AST nodes).
+    pub fn word_at_offset(&self, offset: usize) -> Option<&str> {
+        if offset >= self.text.len() {
+            return None;
+        }
+        let bytes = self.text.as_bytes();
+        // Check if offset is within a word character
+        if !is_symbol_char(bytes[offset]) {
+            return None;
+        }
+        // Find word boundaries
+        let start = (0..offset)
+            .rev()
+            .take_while(|&i| is_symbol_char(bytes[i]))
+            .last()
+            .unwrap_or(offset);
+        let end = (offset..bytes.len())
+            .take_while(|&i| is_symbol_char(bytes[i]))
+            .last()
+            .map(|i| i + 1)
+            .unwrap_or(offset);
+        if start < end {
+            Some(&self.text[start..end])
+        } else {
+            None
+        }
+    }
+
     pub fn line_text(&self, line: usize) -> &str {
         if line >= self.line_offsets.len() {
             return "";
@@ -92,6 +122,15 @@ fn compute_line_offsets(text: &str) -> Vec<usize> {
         }
     }
     offsets
+}
+
+fn is_symbol_char(b: u8) -> bool {
+    matches!(b,
+        b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9'
+        | b'-' | b'_' | b'*' | b'+' | b'/' | b'='
+        | b'<' | b'>' | b'!' | b'?' | b'.' | b':'
+        | b'\\' | b'#' | b'~' | b'$' | b'%' | b'&'
+    )
 }
 
 #[cfg(test)]
