@@ -135,6 +135,26 @@ fn comments_in_range<'a>(comments: &'a [AstNode], start: usize, end: usize) -> V
         .collect()
 }
 
+fn is_setq_node(node: &AstNode) -> bool {
+    if let AstNode::List(elements, _) = node {
+        if let Some(AstNode::Symbol(name, _)) = elements.first() {
+            return name == "SETQ";
+        }
+    }
+    false
+}
+
+/// Preserve the original blank-line spacing between two positions.
+/// Emits `\n\n` if the original had a blank line, otherwise `\n`.
+fn preserve_original_spacing(original: &str, from: usize, to: usize, output: &mut String) {
+    let between = &original[from..to];
+    if between.chars().filter(|&c| c == '\n').count() >= 2 {
+        output.push_str("\n\n");
+    } else {
+        output.push('\n');
+    }
+}
+
 fn format_nodes(
     nodes: &[AstNode],
     comments: &[AstNode],
@@ -171,14 +191,19 @@ fn format_nodes(
     // Track whether the previous item was a standalone (own-line) comment.
     // Inline comments (same line as preceding node) are logically part of that node.
     let mut prev_was_standalone_comment = false;
+    // Track whether the previous node was a setq (for preserving original spacing).
+    let mut prev_was_setq = false;
 
     for item in &items {
         match item {
             FormattedItem::Node(node) => {
-                if prev_end.is_some() {
+                if let Some(pe) = prev_end {
                     if prev_was_standalone_comment {
                         // Comment is attached to this node — no blank line
                         output.push('\n');
+                    } else if prev_was_setq || is_setq_node(node) {
+                        // setq: preserve original spacing
+                        preserve_original_spacing(original, pe, node.span().start, &mut output);
                     } else {
                         // Blank line between top-level forms
                         output.push_str("\n\n");
@@ -187,6 +212,7 @@ fn format_nodes(
                 format_node(node, 0, comments, &mut output, original, config);
                 prev_end = Some(node.span().end);
                 prev_was_standalone_comment = false;
+                prev_was_setq = is_setq_node(node);
             }
             FormattedItem::Comment(comment) => {
                 let is_inline = if let Some(pe) = prev_end {
@@ -198,6 +224,10 @@ fn format_nodes(
                     } else if prev_was_standalone_comment {
                         // Consecutive standalone comments
                         output.push('\n');
+                        false
+                    } else if prev_was_setq {
+                        // Standalone comment after setq: preserve original spacing
+                        preserve_original_spacing(original, pe, comment.span().start, &mut output);
                         false
                     } else {
                         // Standalone comment after a node — blank line to separate
@@ -1208,6 +1238,72 @@ mod tests {
             result,
             "(+ 1 2)\n\n(+ 3 4)\n",
             "Blank line between top-level nodes"
+        );
+    }
+
+    #[test]
+    fn test_toplevel_consecutive_setq_no_blank_line() {
+        let input = "(setq a 1)\n(setq b 2)\n(setq c 3)\n";
+        let result = fmt(input);
+        assert_eq!(
+            result,
+            "(setq a 1)\n(setq b 2)\n(setq c 3)\n",
+            "Consecutive setq without blank lines: preserve no blank lines"
+        );
+    }
+
+    #[test]
+    fn test_toplevel_consecutive_setq_with_blank_line() {
+        let input = "(setq a 1)\n\n(setq b 2)\n";
+        let result = fmt(input);
+        assert_eq!(
+            result,
+            "(setq a 1)\n\n(setq b 2)\n",
+            "Consecutive setq with blank line: preserve blank line"
+        );
+    }
+
+    #[test]
+    fn test_toplevel_setq_then_defun_no_blank_line() {
+        let input = "(setq a 1)\n(defun test () (+ 1 2))\n";
+        let result = fmt(input);
+        assert!(
+            result.contains("(setq a 1)\n(defun test ()"),
+            "setq then defun without blank line: preserve no blank line: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_toplevel_setq_then_defun_blank_line() {
+        let input = "(setq a 1)\n\n(defun test () (+ 1 2))\n";
+        let result = fmt(input);
+        assert!(
+            result.contains("(setq a 1)\n\n(defun test ()"),
+            "setq then defun with blank line: preserve blank line: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_toplevel_setq_with_comment_no_blank_line() {
+        let input = "(setq a 1)\n; about b\n(setq b 2)\n";
+        let result = fmt(input);
+        assert_eq!(
+            result,
+            "(setq a 1)\n; about b\n(setq b 2)\n",
+            "setq with comment: preserve no blank line"
+        );
+    }
+
+    #[test]
+    fn test_toplevel_setq_with_comment_blank_line() {
+        let input = "(setq a 1)\n\n; about b\n(setq b 2)\n";
+        let result = fmt(input);
+        assert_eq!(
+            result,
+            "(setq a 1)\n\n; about b\n(setq b 2)\n",
+            "setq with comment and blank line: preserve blank line"
         );
     }
 }
