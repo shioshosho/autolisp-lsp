@@ -5,12 +5,31 @@ use crate::parser::ast::AstNode;
 use crate::parser::token::Span;
 
 const INDENT_SIZE: usize = 2;
+const LINE_LIMIT: usize = 100;
 
 // Special forms that get extra indentation for their body
 const SPECIAL_FORMS: &[&str] = &[
     "DEFUN", "DEFUN-Q", "LAMBDA", "IF", "COND", "WHILE", "REPEAT", "FOREACH", "PROGN",
     "VL-CATCH-ALL-APPLY",
 ];
+
+/// Returns the number of distinguished arguments for a special form.
+/// Distinguished args are placed on the same line as the form name.
+fn distinguished_args_count(name: &str) -> usize {
+    match name {
+        "IF" | "WHILE" | "REPEAT" | "VL-CATCH-ALL-APPLY" => 1,
+        "FOREACH" => 2,
+        "COND" | "PROGN" => 0,
+        _ => 0,
+    }
+}
+
+/// Format a node into a temporary string for width measurement.
+fn format_node_to_string(node: &AstNode, indent: usize, comments: &[AstNode]) -> String {
+    let mut buf = String::new();
+    format_node(node, indent, comments, &mut buf);
+    buf
+}
 
 pub fn format_document(doc: &Document, _options: &FormattingOptions) -> Vec<TextEdit> {
     let formatted = format_nodes(&doc.ast, &doc.comments, &doc.text);
@@ -231,14 +250,16 @@ fn format_node(node: &AstNode, indent: usize, comments: &[AstNode], output: &mut
 
 /// Format a sequence of body expressions, interleaving any comments that fall
 /// between them. Each element is placed on its own line at the given indent.
+/// Returns `true` if the last emitted item was a comment, `false` if it was an expression.
 fn format_body_with_comments(
     elements: &[AstNode],
     parent_span: Span,
     indent: usize,
     comments: &[AstNode],
     output: &mut String,
-) {
+) -> bool {
     let body_comments = comments_in_range(comments, parent_span.start, parent_span.end);
+    let mut last_was_comment = false;
 
     if elements.is_empty() {
         // Only comments in the body
@@ -246,8 +267,9 @@ fn format_body_with_comments(
             output.push('\n');
             push_indent(output, indent);
             format_comment(c, output);
+            last_was_comment = true;
         }
-        return;
+        return last_was_comment;
     }
 
     // Track which comments have been emitted
@@ -264,6 +286,7 @@ fn format_body_with_comments(
             push_indent(output, indent);
             format_comment(body_comments[comment_idx], output);
             comment_idx += 1;
+            last_was_comment = true;
         }
 
         // Skip comments that overlap with the expression (already inside it)
@@ -276,6 +299,7 @@ fn format_body_with_comments(
         output.push('\n');
         push_indent(output, indent);
         format_node(expr, indent, comments, output);
+        last_was_comment = false;
 
         // Check for inline comment on same line after expression
         // (comment that starts right after expression, before next newline)
@@ -301,7 +325,10 @@ fn format_body_with_comments(
         push_indent(output, indent);
         format_comment(body_comments[comment_idx], output);
         comment_idx += 1;
+        last_was_comment = true;
     }
+
+    last_was_comment
 }
 
 fn format_defun(
@@ -363,10 +390,20 @@ fn format_defun(
         .unwrap_or(span.start);
     let body_span = Span::new(after_params, span.end);
 
-    format_body_with_comments(body, body_span, body_indent, comments, output);
+    if body.is_empty() && doc_comment.is_none() {
+        // Empty body: stack closing paren right after param list
+        let body_comments = comments_in_range(comments, body_span.start, body_span.end);
+        if body_comments.is_empty() {
+            output.push(')');
+            return;
+        }
+    }
 
-    output.push('\n');
-    push_indent(output, indent);
+    let ends_with_comment = format_body_with_comments(body, body_span, body_indent, comments, output);
+    if ends_with_comment {
+        output.push('\n');
+        push_indent(output, indent);
+    }
     output.push(')');
 }
 
@@ -399,9 +436,11 @@ fn format_lambda(
     } else {
         let body_start = body.first().map(|b| b.span().start).unwrap_or(span.start);
         let body_span = Span::new(body_start, span.end);
-        format_body_with_comments(body, body_span, body_indent, comments, output);
-        output.push('\n');
-        push_indent(output, indent);
+        let ends_with_comment = format_body_with_comments(body, body_span, body_indent, comments, output);
+        if ends_with_comment {
+            output.push('\n');
+            push_indent(output, indent);
+        }
         output.push(')');
     }
 }
@@ -424,42 +463,109 @@ fn format_list(elements: &[AstNode], span: Span, indent: usize, comments: &[AstN
     // Try single-line format first (only if no comments inside)
     if !has_comments {
         let single_line = format_list_single_line(elements, indent, comments);
-        if single_line.len() + indent <= 80 && !single_line.contains('\n') {
+        if single_line.len() + indent <= LINE_LIMIT && !single_line.contains('\n') {
             output.push_str(&single_line);
             return;
         }
     }
 
-    // Multi-line format
+    // Multi-line format: dispatch to special form or regular call
+    if is_special {
+        if let AstNode::Symbol(name, _) = &elements[0] {
+            format_list_special_form(name, elements, span, indent, comments, output);
+        }
+    } else {
+        format_list_regular_call(elements, span, indent, comments, output);
+    }
+}
+
+/// Format a special form list in multi-line mode.
+/// Distinguished args go on the same line as the form name,
+/// remaining body args get indent+2 on separate lines.
+fn format_list_special_form(
+    name: &str,
+    elements: &[AstNode],
+    span: Span,
+    indent: usize,
+    comments: &[AstNode],
+    output: &mut String,
+) {
+    let dist_count = distinguished_args_count(name);
+    let body_indent = indent + INDENT_SIZE;
+
     output.push('(');
     format_node(&elements[0], indent + 1, comments, output);
 
-    let body_indent = if is_special {
-        indent + INDENT_SIZE
-    } else {
-        indent + INDENT_SIZE
-    };
+    // Output distinguished args on the same line
+    let dist_end = std::cmp::min(1 + dist_count, elements.len());
+    for element in &elements[1..dist_end] {
+        output.push(' ');
+        format_node(element, indent + 1, comments, output);
+    }
 
-    if elements.len() > 1 {
-        // Get comments that belong inside this list but not inside child nodes
+    // Remaining body args on new lines
+    if dist_end < elements.len() {
+        let body_elements = &elements[dist_end..];
+        let body_start = body_elements.first().map(|b| b.span().start).unwrap_or(span.start);
+        let body_span = Span::new(body_start, span.end);
+        let ends_with_comment = format_body_with_comments(body_elements, body_span, body_indent, comments, output);
+        if ends_with_comment {
+            output.push('\n');
+            push_indent(output, indent);
+        }
+    }
+    output.push(')');
+}
+
+/// Format a regular function call in multi-line mode.
+/// First arg on same line, remaining args aligned to first arg position.
+fn format_list_regular_call(
+    elements: &[AstNode],
+    span: Span,
+    indent: usize,
+    comments: &[AstNode],
+    output: &mut String,
+) {
+    output.push('(');
+    format_node(&elements[0], indent + 1, comments, output);
+
+    if elements.len() == 1 {
+        output.push(')');
+        return;
+    }
+
+    // Calculate alignment column: (func-name + space
+    let func_str = format_node_to_string(&elements[0], indent + 1, comments);
+    let align_col = indent + 1 + func_str.len() + 1; // ( + name + space
+
+    // Fallback to indent+2 if alignment would be too deep
+    let align_col = if align_col > 40 { indent + INDENT_SIZE } else { align_col };
+
+    // First arg on same line
+    output.push(' ');
+    format_node(&elements[1], align_col, comments, output);
+
+    // Remaining args aligned
+    if elements.len() > 2 {
         let list_comments = comments_in_range(comments, span.start, span.end);
         let mut comment_idx = 0;
+        let mut last_was_comment = false;
 
-        // Skip comments before or inside the first element
+        // Skip comments before or inside elements[0] and elements[1]
+        let skip_until = elements[1].span().end;
         while comment_idx < list_comments.len()
-            && list_comments[comment_idx].span().start < elements[0].span().end
+            && list_comments[comment_idx].span().start < skip_until
         {
             comment_idx += 1;
         }
 
-        for (i, element) in elements[1..].iter().enumerate() {
+        for element in &elements[2..] {
             let elem_start = element.span().start;
 
             // Emit comments before this element
             while comment_idx < list_comments.len()
                 && list_comments[comment_idx].span().start < elem_start
             {
-                // Only emit if not inside a sibling element
                 let cs = list_comments[comment_idx].span().start;
                 let inside_sibling = elements.iter().any(|e| {
                     let es = e.span();
@@ -467,8 +573,9 @@ fn format_list(elements: &[AstNode], span: Span, indent: usize, comments: &[AstN
                 });
                 if !inside_sibling {
                     output.push('\n');
-                    push_indent(output, body_indent);
+                    push_indent(output, align_col);
                     format_comment(list_comments[comment_idx], output);
+                    last_was_comment = true;
                 }
                 comment_idx += 1;
             }
@@ -481,8 +588,9 @@ fn format_list(elements: &[AstNode], span: Span, indent: usize, comments: &[AstN
             }
 
             output.push('\n');
-            push_indent(output, body_indent);
-            format_node(element, body_indent, comments, output);
+            push_indent(output, align_col);
+            format_node(element, align_col, comments, output);
+            last_was_comment = false;
         }
 
         // Trailing comments
@@ -494,15 +602,18 @@ fn format_list(elements: &[AstNode], span: Span, indent: usize, comments: &[AstN
             });
             if !inside_child {
                 output.push('\n');
-                push_indent(output, body_indent);
+                push_indent(output, align_col);
                 format_comment(list_comments[comment_idx], output);
+                last_was_comment = true;
             }
             comment_idx += 1;
         }
-    }
 
-    output.push('\n');
-    push_indent(output, indent);
+        if last_was_comment {
+            output.push('\n');
+            push_indent(output, indent);
+        }
+    }
     output.push(')');
 }
 
@@ -647,5 +758,109 @@ mod tests {
             "Japanese comment should be preserved: {}",
             formatted
         );
+    }
+
+    /// Helper to format input and return the result
+    fn fmt(input: &str) -> String {
+        let doc = Document::new(input.to_string());
+        let edits = format_document(&doc, &FormattingOptions::default());
+        if edits.is_empty() {
+            input.to_string()
+        } else {
+            edits[0].new_text.clone()
+        }
+    }
+
+    #[test]
+    fn test_format_defun_stacked_parens() {
+        let input = "(defun test (x / temp)\n  (setq msg \"hello\")\n  (alert msg)\n)\n";
+        let result = fmt(input);
+        assert_eq!(
+            result,
+            "(defun test (x / temp)\n  (setq msg \"hello\")\n  (alert msg))\n",
+            "Closing paren should stack on last body expression"
+        );
+    }
+
+    #[test]
+    fn test_format_if_with_progn() {
+        // Each sub-expression must exceed LINE_LIMIT when combined with indent
+        let input = "(if (= some-long-variable-name another-long-variable-name)\n  (progn\n    (setq result-value-variable \"some-long-initial-value\")\n    (alert \"operation completed successfully with message\"))\n  (alert \"operation failed with an error message to display\"))\n";
+        let result = fmt(input);
+        let expected = "(if (= some-long-variable-name another-long-variable-name)\n  (progn\n    (setq result-value-variable \"some-long-initial-value\")\n    (alert \"operation completed successfully with message\"))\n  (alert \"operation failed with an error message to display\"))\n";
+        assert_eq!(
+            result, expected,
+            "if+progn closing parens should stack"
+        );
+    }
+
+    #[test]
+    fn test_format_cond() {
+        // Make cond body long enough to force multi-line
+        let input = "(cond\n  ((= long-variable-name 1) \"result-for-condition-one\")\n  ((= long-variable-name 2) \"result-for-condition-two\")\n  (T \"default-result-for-other-cases\"))\n";
+        let result = fmt(input);
+        let expected = "(cond\n  ((= long-variable-name 1) \"result-for-condition-one\")\n  ((= long-variable-name 2) \"result-for-condition-two\")\n  (T \"default-result-for-other-cases\"))\n";
+        assert_eq!(
+            result, expected,
+            "cond should have 0 distinguished args and stacked closing paren"
+        );
+    }
+
+    #[test]
+    fn test_format_foreach() {
+        // Make foreach long enough to force multi-line
+        let input = "(foreach current-item some-long-list-variable-name\n  (print current-item)\n  (setq counter (+ counter 1)))\n";
+        let result = fmt(input);
+        let expected = "(foreach current-item some-long-list-variable-name\n  (print current-item)\n  (setq counter (+ counter 1)))\n";
+        assert_eq!(
+            result, expected,
+            "foreach should have 2 distinguished args (var, list) on same line"
+        );
+    }
+
+    #[test]
+    fn test_format_regular_call_alignment() {
+        // strcat with args that exceed line limit to force multi-line (>100 chars total)
+        let input = "(strcat \"hello-this-is-a-very-long-string-value\" \" separator-string \" \"world-another-very-long-string-value\")\n";
+        let result = fmt(input);
+        // Should align args to first arg position: (strcat <-- here
+        // strcat = 6 chars, so align_col = 1 + 6 + 1 = 8
+        assert!(
+            result.contains("\n        \""),
+            "Regular call args should align to first arg position (col 8): {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_format_nested_stacking() {
+        // if body must exceed LINE_LIMIT at indent=2 to force multi-line
+        let input = "(defun calculate-result (first-value-param second-value-param)\n  (if (> first-value-param second-value-param)\n    (- first-value-param second-value-param)\n    (+ first-value-param second-value-param)))\n";
+        let result = fmt(input);
+        let expected = "(defun calculate-result (first-value-param second-value-param)\n  (if (> first-value-param second-value-param)\n    (- first-value-param second-value-param)\n    (+ first-value-param second-value-param)))\n";
+        assert_eq!(
+            result, expected,
+            "Nested closing parens should all stack"
+        );
+    }
+
+    #[test]
+    fn test_format_no_closing_paren_alone() {
+        let inputs = [
+            "(defun test (x)\n  (+ x 1)\n)\n",
+            // Long enough inputs that force multi-line
+            "(defun my-long-function-name (some-parameter / local-var)\n  (setq local-var (+ some-parameter 1))\n  (alert (itoa local-var))\n)\n",
+        ];
+        for input in &inputs {
+            let result = fmt(input);
+            for line in result.lines() {
+                let trimmed = line.trim();
+                assert!(
+                    trimmed != ")" && trimmed != "))" && trimmed != ")))",
+                    "No line should contain only closing parens.\nInput: {}\nOutput: {}\nBad line: '{}'",
+                    input, result, line
+                );
+            }
+        }
     }
 }
