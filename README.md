@@ -69,14 +69,18 @@ vim.api.nvim_create_autocmd("FileType", {
 
 ```yaml
 format:
-  force-convert-case: true  # デフォルト: true
+  force-convert-case: true        # デフォルト: true
+  inline-comment-style: previous-line  # デフォルト: previous-line
 ```
 
 | キー | 型 | デフォルト | 説明 |
 |------|------|-----------|------|
 | format.force-convert-case | bool | true | true: フォーマット時にシンボル名を小文字に変換（従来動作）。false: ソースコードの元のケースを保持 |
+| format.inline-comment-style | string | previous-line | 行末コメントの配置スタイル。previous-line / same-line / next-line |
 
 ### 設定例
+
+#### force-convert-case
 
 元のケースを保持する場合:
 
@@ -91,6 +95,42 @@ format:
 
 ;; force-convert-case: false
 (defun MyFunc (Param1 Param2 / LocalVar) ...)
+```
+
+#### inline-comment-style
+
+行末コメント（インラインコメント）のフォーマット後の配置を制御する。
+
+入力:
+```lisp
+(defun test ()
+  (setq a 1) ; comment about a
+  (setq b 2))
+```
+
+| スタイル | 出力 |
+|----------|------|
+| previous-line (デフォルト) | コメントを式の前の行へ移動 |
+| same-line | コメントを式の行末に保持 |
+| next-line | コメントを式の次の行へ移動 |
+
+```lisp
+;; previous-line (デフォルト)
+(defun test ()
+  ; comment about a
+  (setq a 1)
+  (setq b 2))
+
+;; same-line
+(defun test ()
+  (setq a 1) ; comment about a
+  (setq b 2))
+
+;; next-line
+(defun test ()
+  (setq a 1)
+  ; comment about a
+  (setq b 2))
 ```
 
 ## アーキテクチャ

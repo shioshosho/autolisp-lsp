@@ -16,17 +16,34 @@ impl Default for Config {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InlineCommentStyle {
+    PreviousLine,
+    SameLine,
+    NextLine,
+}
+
+impl Default for InlineCommentStyle {
+    fn default() -> Self {
+        Self::PreviousLine
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct FormatConfig {
     #[serde(default = "default_true")]
     pub force_convert_case: bool,
+    #[serde(default)]
+    pub inline_comment_style: InlineCommentStyle,
 }
 
 impl Default for FormatConfig {
     fn default() -> Self {
         Self {
             force_convert_case: default_true(),
+            inline_comment_style: InlineCommentStyle::default(),
         }
     }
 }
@@ -82,6 +99,7 @@ mod tests {
     fn test_config_default() {
         let cfg = Config::default();
         assert!(cfg.format.force_convert_case);
+        assert_eq!(cfg.format.inline_comment_style, InlineCommentStyle::PreviousLine);
     }
 
     #[test]
@@ -89,6 +107,7 @@ mod tests {
         let yaml = "";
         let cfg: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(cfg.format.force_convert_case);
+        assert_eq!(cfg.format.inline_comment_style, InlineCommentStyle::PreviousLine);
     }
 
     #[test]
@@ -96,5 +115,20 @@ mod tests {
         let yaml = "format: {}\n";
         let cfg: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(cfg.format.force_convert_case);
+    }
+
+    #[test]
+    fn test_config_inline_comment_style() {
+        let yaml = "format:\n  inline-comment-style: same-line\n";
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.format.inline_comment_style, InlineCommentStyle::SameLine);
+
+        let yaml = "format:\n  inline-comment-style: next-line\n";
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.format.inline_comment_style, InlineCommentStyle::NextLine);
+
+        let yaml = "format:\n  inline-comment-style: previous-line\n";
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.format.inline_comment_style, InlineCommentStyle::PreviousLine);
     }
 }

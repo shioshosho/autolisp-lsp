@@ -1,6 +1,6 @@
 use tower_lsp::lsp_types::*;
 
-use crate::config::FormatConfig;
+use crate::config::{FormatConfig, InlineCommentStyle};
 use crate::document::Document;
 use crate::parser::ast::AstNode;
 use crate::parser::token::Span;
@@ -316,21 +316,55 @@ fn format_body_with_comments(
         return last_was_comment;
     }
 
-    // Track which comments have been emitted
+    // Identify inline comments: comments on the same line as a preceding expression
+    let mut inline_for_expr: Vec<Option<usize>> = vec![None; elements.len()];
+    let mut is_inline = vec![false; body_comments.len()];
+
+    for (ei, expr) in elements.iter().enumerate() {
+        let expr_end = expr.span().end;
+        for (ci, c) in body_comments.iter().enumerate() {
+            if is_inline[ci] {
+                continue;
+            }
+            let cs = c.span().start;
+            if cs < expr_end {
+                continue;
+            }
+            // First comment after this expression: check if on the same line
+            if !original[expr_end..cs].contains('\n') {
+                inline_for_expr[ei] = Some(ci);
+                is_inline[ci] = true;
+            }
+            break;
+        }
+    }
+
     let mut comment_idx = 0;
 
     for (i, expr) in elements.iter().enumerate() {
         let expr_start = expr.span().start;
 
-        // Emit comments that come before this expression
+        // Emit standalone (non-inline) comments that come before this expression
         while comment_idx < body_comments.len()
             && body_comments[comment_idx].span().start < expr_start
         {
-            output.push('\n');
-            push_indent(output, indent);
-            format_comment(body_comments[comment_idx], output);
+            if !is_inline[comment_idx] {
+                output.push('\n');
+                push_indent(output, indent);
+                format_comment(body_comments[comment_idx], output);
+                last_was_comment = true;
+            }
             comment_idx += 1;
-            last_was_comment = true;
+        }
+
+        // PreviousLine: emit inline comment right before its associated expression
+        if config.inline_comment_style == InlineCommentStyle::PreviousLine {
+            if let Some(ci) = inline_for_expr[i] {
+                output.push('\n');
+                push_indent(output, indent);
+                format_comment(body_comments[ci], output);
+                last_was_comment = true;
+            }
         }
 
         // Skip comments that overlap with the expression (already inside it)
@@ -345,31 +379,39 @@ fn format_body_with_comments(
         format_node(expr, indent, comments, output, original, config);
         last_was_comment = false;
 
-        // Check for inline comment on same line after expression
-        // (comment that starts right after expression, before next newline)
-        if comment_idx < body_comments.len() {
-            let next_elem_start = if i + 1 < elements.len() {
-                elements[i + 1].span().start
-            } else {
-                parent_span.end
-            };
-            let cc = body_comments[comment_idx];
-            let cs = cc.span().start;
-            if cs >= expr.span().end && cs < next_elem_start {
-                // Check if there are no body expressions between this comment
-                // and the current one, suggesting it's an inline comment
-                // We just emit it on the next line for simplicity
+        // SameLine / NextLine: emit inline comment after the expression
+        if let Some(ci) = inline_for_expr[i] {
+            match config.inline_comment_style {
+                InlineCommentStyle::SameLine => {
+                    output.push(' ');
+                    format_comment(body_comments[ci], output);
+                    last_was_comment = true;
+                }
+                InlineCommentStyle::NextLine => {
+                    output.push('\n');
+                    push_indent(output, indent);
+                    format_comment(body_comments[ci], output);
+                    last_was_comment = true;
+                }
+                InlineCommentStyle::PreviousLine => {} // already handled above
             }
+        }
+
+        // Advance past inline comments
+        while comment_idx < body_comments.len() && is_inline[comment_idx] {
+            comment_idx += 1;
         }
     }
 
-    // Emit trailing comments after the last expression
+    // Emit trailing standalone comments
     while comment_idx < body_comments.len() {
-        output.push('\n');
-        push_indent(output, indent);
-        format_comment(body_comments[comment_idx], output);
+        if !is_inline[comment_idx] {
+            output.push('\n');
+            push_indent(output, indent);
+            format_comment(body_comments[comment_idx], output);
+            last_was_comment = true;
+        }
         comment_idx += 1;
-        last_was_comment = true;
     }
 
     last_was_comment
@@ -947,7 +989,7 @@ mod tests {
 
     #[test]
     fn test_format_preserve_case() {
-        let config = FormatConfig { force_convert_case: false };
+        let config = FormatConfig { force_convert_case: false, ..Default::default() };
         let input = "(defun MyFunc (Param1 Param2 / LocalVar)\n  (setq LocalVar (+ Param1 Param2))\n  LocalVar)\n";
         let result = fmt_with_config(input, &config);
         assert!(
@@ -969,7 +1011,7 @@ mod tests {
 
     #[test]
     fn test_format_force_lowercase() {
-        let config = FormatConfig { force_convert_case: true };
+        let config = FormatConfig { force_convert_case: true, ..Default::default() };
         let input = "(defun MyFunc (Param1 Param2 / LocalVar)\n  (setq LocalVar (+ Param1 Param2))\n  LocalVar)\n";
         let result = fmt_with_config(input, &config);
         assert!(
@@ -996,12 +1038,101 @@ mod tests {
 
     #[test]
     fn test_format_preserve_case_lambda() {
-        let config = FormatConfig { force_convert_case: false };
+        let config = FormatConfig { force_convert_case: false, ..Default::default() };
         let input = "(lambda (MyParam) (+ MyParam 1))\n";
         let result = fmt_with_config(input, &config);
         assert!(
             result.contains("MyParam"),
             "Lambda parameter should preserve original case: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_inline_comment_previous_line() {
+        let config = FormatConfig {
+            inline_comment_style: InlineCommentStyle::PreviousLine,
+            ..Default::default()
+        };
+        let input = "(defun test ()\n  (setq a 1) ; comment about a\n  (setq b 2))\n";
+        let result = fmt_with_config(input, &config);
+        let expected = "(defun test ()\n  ; comment about a\n  (setq a 1)\n  (setq b 2))\n";
+        assert_eq!(
+            result, expected,
+            "Inline comment should move to the line before the expression"
+        );
+    }
+
+    #[test]
+    fn test_inline_comment_same_line() {
+        let config = FormatConfig {
+            inline_comment_style: InlineCommentStyle::SameLine,
+            ..Default::default()
+        };
+        let input = "(defun test ()\n  (setq a 1) ; comment about a\n  (setq b 2))\n";
+        let result = fmt_with_config(input, &config);
+        let expected = "(defun test ()\n  (setq a 1) ; comment about a\n  (setq b 2))\n";
+        assert_eq!(
+            result, expected,
+            "Inline comment should stay on the same line as the expression"
+        );
+    }
+
+    #[test]
+    fn test_inline_comment_next_line() {
+        let config = FormatConfig {
+            inline_comment_style: InlineCommentStyle::NextLine,
+            ..Default::default()
+        };
+        let input = "(defun test ()\n  (setq a 1) ; comment about a\n  (setq b 2))\n";
+        let result = fmt_with_config(input, &config);
+        let expected = "(defun test ()\n  (setq a 1)\n  ; comment about a\n  (setq b 2))\n";
+        assert_eq!(
+            result, expected,
+            "Inline comment should move to the line after the expression"
+        );
+    }
+
+    #[test]
+    fn test_inline_comment_default_is_previous_line() {
+        // Default config should use previous-line style
+        let input = "(defun test ()\n  (setq a 1) ; comment\n  (setq b 2))\n";
+        let result = fmt(input);
+        assert!(
+            result.contains("; comment\n  (setq a 1)"),
+            "Default should be previous-line: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_inline_comment_with_standalone_comment() {
+        let config = FormatConfig {
+            inline_comment_style: InlineCommentStyle::PreviousLine,
+            ..Default::default()
+        };
+        let input = "(defun test ()\n  ; standalone comment\n  (setq a 1) ; inline comment\n  (setq b 2))\n";
+        let result = fmt_with_config(input, &config);
+        // standalone comment stays before expr, inline comment moves to before its expr
+        assert!(
+            result.contains("  ; standalone comment\n  ; inline comment\n  (setq a 1)"),
+            "Standalone then inline comment should both appear before expression: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_inline_comment_on_last_expr_same_line() {
+        let config = FormatConfig {
+            inline_comment_style: InlineCommentStyle::SameLine,
+            ..Default::default()
+        };
+        let input = "(defun test ()\n  (setq a 1) ; comment\n)\n";
+        let result = fmt_with_config(input, &config);
+        // Comment on same line as last expr forces closing paren to next line
+        assert!(
+            result.contains("(setq a 1) ; comment"),
+            "Comment should be on same line: {}",
             result
         );
     }
