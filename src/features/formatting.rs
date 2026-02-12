@@ -546,3 +546,106 @@ fn push_indent(output: &mut String, indent: usize) {
         output.push(' ');
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::Document;
+
+    #[test]
+    fn test_format_japanese_string() {
+        let input = "(setq ver \"DRCエラーラベル変更コマンド\")\n";
+        let doc = Document::new(input.to_string());
+        let edits = format_document(&doc, &FormattingOptions::default());
+        if edits.is_empty() {
+            // No changes means input is already correct
+            assert!(input.contains("DRCエラーラベル変更コマンド"));
+        } else {
+            let formatted = &edits[0].new_text;
+            assert!(
+                formatted.contains("\"DRCエラーラベル変更コマンド\""),
+                "Japanese string corrupted: {}",
+                formatted
+            );
+        }
+    }
+
+    #[test]
+    fn test_format_japanese_comment() {
+        let input = "; DRCエラーラベル変更コマンド\n(+ 1 2)\n";
+        let doc = Document::new(input.to_string());
+        let edits = format_document(&doc, &FormattingOptions::default());
+        if edits.is_empty() {
+            assert!(input.contains("DRCエラーラベル変更コマンド"));
+        } else {
+            let formatted = &edits[0].new_text;
+            assert!(
+                formatted.contains("DRCエラーラベル変更コマンド"),
+                "Japanese comment corrupted: {}",
+                formatted
+            );
+        }
+    }
+
+    #[test]
+    fn test_format_japanese_in_defun() {
+        let input = "(defun test (x)\n  ; 日本語コメント\n  (setq msg \"日本語テスト\")\n  msg\n)\n";
+        let doc = Document::new(input.to_string());
+        let edits = format_document(&doc, &FormattingOptions::default());
+        if edits.is_empty() {
+            assert!(input.contains("日本語コメント"));
+            assert!(input.contains("日本語テスト"));
+        } else {
+            let formatted = &edits[0].new_text;
+            assert!(
+                formatted.contains("日本語コメント"),
+                "Japanese comment in defun corrupted: {}",
+                formatted
+            );
+            assert!(
+                formatted.contains("\"日本語テスト\""),
+                "Japanese string in defun corrupted: {}",
+                formatted
+            );
+        }
+    }
+
+    #[test]
+    fn test_format_crlf_strips_cr_from_comments() {
+        let input = "; 日本語コメント\r\n(+ 1 2)\r\n";
+        let doc = Document::new(input.to_string());
+        let edits = format_document(&doc, &FormattingOptions::default());
+        // CRLF input should produce LF-only output
+        assert!(!edits.is_empty(), "CRLF should trigger formatting changes");
+        let formatted = &edits[0].new_text;
+        assert!(
+            !formatted.contains('\r'),
+            "Output should not contain CR: {:?}",
+            formatted
+        );
+        assert!(
+            formatted.contains("日本語コメント"),
+            "Japanese comment should be preserved: {}",
+            formatted
+        );
+    }
+
+    #[test]
+    fn test_format_crlf_defun_comments() {
+        let input = "(defun test (x)\r\n  ; 文字位置インデックス\r\n  (+ x 1)\r\n)\r\n";
+        let doc = Document::new(input.to_string());
+        let edits = format_document(&doc, &FormattingOptions::default());
+        assert!(!edits.is_empty(), "CRLF should trigger formatting changes");
+        let formatted = &edits[0].new_text;
+        assert!(
+            !formatted.contains('\r'),
+            "Output should not contain CR: {:?}",
+            formatted
+        );
+        assert!(
+            formatted.contains("文字位置インデックス"),
+            "Japanese comment should be preserved: {}",
+            formatted
+        );
+    }
+}

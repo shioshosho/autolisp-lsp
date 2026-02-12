@@ -28,18 +28,6 @@ impl<'a> Lexer<'a> {
         tokens
     }
 
-    fn peek(&self) -> Option<u8> {
-        self.bytes.get(self.pos).copied()
-    }
-
-    fn advance(&mut self) -> Option<u8> {
-        let b = self.bytes.get(self.pos).copied();
-        if b.is_some() {
-            self.pos += 1;
-        }
-        b
-    }
-
     fn skip_whitespace(&mut self) {
         while self.pos < self.bytes.len() {
             let b = self.bytes[self.pos];
@@ -102,47 +90,77 @@ impl<'a> Lexer<'a> {
         while self.pos < self.bytes.len() && self.bytes[self.pos] != b'\n' {
             self.pos += 1;
         }
-        let text = self.source[content_start..self.pos].to_string();
+        let mut end = self.pos;
+        // Strip trailing \r for CRLF line endings
+        if end > content_start && self.bytes[end - 1] == b'\r' {
+            end -= 1;
+        }
+        let text = self.source[content_start..end].to_string();
         Token::LineComment(text, Span::new(start, self.pos))
     }
 
     fn lex_string(&mut self, start: usize) -> Token {
         self.pos += 1; // skip opening '"'
         let mut value = String::new();
-        loop {
-            match self.advance() {
-                None => {
-                    return Token::Error(
-                        "unterminated string".to_string(),
-                        Span::new(start, self.pos),
-                    );
-                }
-                Some(b'\\') => match self.advance() {
-                    Some(b'\\') => value.push('\\'),
-                    Some(b'"') => value.push('"'),
-                    Some(b'n') => value.push('\n'),
-                    Some(b'r') => value.push('\r'),
-                    Some(b't') => value.push('\t'),
-                    Some(b'e') => value.push('\x1b'),
-                    Some(ch) => {
-                        value.push('\\');
-                        value.push(ch as char);
-                    }
-                    None => {
-                        return Token::Error(
-                            "unterminated string escape".to_string(),
-                            Span::new(start, self.pos),
-                        );
-                    }
-                },
-                Some(b'"') => {
+        while self.pos < self.bytes.len() {
+            let b = self.bytes[self.pos];
+            match b {
+                b'"' => {
+                    self.pos += 1;
                     return Token::StringLit(value, Span::new(start, self.pos));
                 }
-                Some(ch) => {
-                    value.push(ch as char);
+                b'\\' => {
+                    self.pos += 1;
+                    match self.bytes.get(self.pos).copied() {
+                        Some(b'\\') => {
+                            value.push('\\');
+                            self.pos += 1;
+                        }
+                        Some(b'"') => {
+                            value.push('"');
+                            self.pos += 1;
+                        }
+                        Some(b'n') => {
+                            value.push('\n');
+                            self.pos += 1;
+                        }
+                        Some(b'r') => {
+                            value.push('\r');
+                            self.pos += 1;
+                        }
+                        Some(b't') => {
+                            value.push('\t');
+                            self.pos += 1;
+                        }
+                        Some(b'e') => {
+                            value.push('\x1b');
+                            self.pos += 1;
+                        }
+                        Some(ch) => {
+                            value.push('\\');
+                            value.push(ch as char);
+                            self.pos += 1;
+                        }
+                        None => {
+                            return Token::Error(
+                                "unterminated string escape".to_string(),
+                                Span::new(start, self.pos),
+                            );
+                        }
+                    }
+                }
+                _ => {
+                    // Handle multi-byte UTF-8 characters properly
+                    let ch = self.source[self.pos..].chars().next().unwrap();
+                    value.push(ch);
+                    self.pos += ch.len_utf8();
                 }
             }
         }
+        Token::Error(
+            "unterminated string".to_string(),
+            Span::new(start, self.pos),
+        )
     }
 
     fn lex_atom(&mut self, start: usize) -> Token {
@@ -314,5 +332,44 @@ mod tests {
         assert!(matches!(tokens[2], Token::Dot(_)));
         assert!(matches!(tokens[3], Token::Integer(2, _)));
         assert!(matches!(tokens[4], Token::RParen(_)));
+    }
+
+    #[test]
+    fn test_string_multibyte_utf8() {
+        let tokens = lex(r#""DRCエラーラベル変更コマンド""#);
+        match &tokens[0] {
+            Token::StringLit(s, _) => assert_eq!(s, "DRCエラーラベル変更コマンド"),
+            _ => panic!("expected string"),
+        }
+    }
+
+    #[test]
+    fn test_string_japanese_mixed() {
+        let tokens = lex(r#""[DLDRCHG] Ver.1.0.0 : DRCエラー""#);
+        match &tokens[0] {
+            Token::StringLit(s, _) => assert_eq!(s, "[DLDRCHG] Ver.1.0.0 : DRCエラー"),
+            _ => panic!("expected string"),
+        }
+    }
+
+    #[test]
+    fn test_comment_crlf() {
+        let tokens = lex("; 日本語コメント\r\n(+ 1 2)");
+        match &tokens[0] {
+            Token::LineComment(text, _) => {
+                assert_eq!(text, " 日本語コメント");
+                assert!(!text.ends_with('\r'));
+            }
+            _ => panic!("expected line comment"),
+        }
+    }
+
+    #[test]
+    fn test_comment_japanese() {
+        let tokens = lex("; レジストリ設定を読み込む\n");
+        match &tokens[0] {
+            Token::LineComment(text, _) => assert_eq!(text, " レジストリ設定を読み込む"),
+            _ => panic!("expected line comment"),
+        }
     }
 }
