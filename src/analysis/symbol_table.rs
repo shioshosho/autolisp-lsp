@@ -60,6 +60,42 @@ impl SymbolTable {
         self.references.iter().filter(|r| r.name == upper).collect()
     }
 
+    /// Find the most specific definition for a symbol at a given span.
+    /// Prefers scoped definitions (parameters/locals) whose enclosing function
+    /// contains the given span, falling back to global definitions.
+    pub fn find_definition_at(&self, name: &str, span: Span) -> Option<&SymbolInfo> {
+        let upper = name.to_uppercase();
+        let mut best: Option<&SymbolInfo> = None;
+        for d in &self.definitions {
+            if d.name != upper {
+                continue;
+            }
+            match d.kind {
+                SymbolKind::Parameter | SymbolKind::LocalVar => {
+                    // Check if the reference is within the scope of this definition
+                    if span.start >= d.span.start && span.end <= d.span.end {
+                        // Prefer the narrowest scope
+                        if let Some(prev) = best {
+                            let prev_size = prev.span.end - prev.span.start;
+                            let this_size = d.span.end - d.span.start;
+                            if this_size < prev_size {
+                                best = Some(d);
+                            }
+                        } else {
+                            best = Some(d);
+                        }
+                    }
+                }
+                _ => {
+                    if best.is_none() {
+                        best = Some(d);
+                    }
+                }
+            }
+        }
+        best
+    }
+
     pub fn symbol_at_offset(&self, offset: usize) -> Option<&str> {
         // Check references first (more numerous)
         for r in &self.references {

@@ -11,6 +11,9 @@ pub fn completion(doc: &Document, position: Position) -> Vec<CompletionItem> {
 
     let mut items = Vec::new();
 
+    // Snippet completions
+    items.extend(snippet_completions(&prefix_upper));
+
     // Built-in functions
     if prefix_upper.is_empty() {
         // After '(' show all builtins
@@ -98,4 +101,105 @@ fn builtin_to_completion(builtin: &'static builtins::BuiltinFunction) -> Complet
         })),
         ..Default::default()
     }
+}
+
+fn snippet_completions(prefix_upper: &str) -> Vec<CompletionItem> {
+    static SNIPPETS: &[(&str, &str, &str)] = &[
+        (
+            "defun",
+            "(defun ${1:name} (${2:params})\n  ${0}\n)",
+            "Define a function",
+        ),
+        (
+            "defun (command)",
+            "(defun c:${1:name} (${2:/ locals})\n  ${0}\n)",
+            "Define a command function",
+        ),
+        (
+            "if",
+            "(if ${1:test}\n  ${2:then}\n  ${3:else}\n)",
+            "If-then-else conditional",
+        ),
+        (
+            "if (progn)",
+            "(if ${1:test}\n  (progn\n    ${0}\n  )\n)",
+            "If with progn block",
+        ),
+        (
+            "cond",
+            "(cond\n  (${1:test1} ${2:result1})\n  (T ${0})\n)",
+            "Multi-branch conditional",
+        ),
+        (
+            "while",
+            "(while ${1:test}\n  ${0}\n)",
+            "While loop",
+        ),
+        (
+            "foreach",
+            "(foreach ${1:item} ${2:list}\n  ${0}\n)",
+            "Iterate over list elements",
+        ),
+        (
+            "repeat",
+            "(repeat ${1:count}\n  ${0}\n)",
+            "Repeat N times",
+        ),
+        (
+            "setq",
+            "(setq ${1:var} ${0})",
+            "Set variable value",
+        ),
+        (
+            "lambda",
+            "(lambda (${1:params}) ${0})",
+            "Anonymous function",
+        ),
+        (
+            "progn",
+            "(progn\n  ${0}\n)",
+            "Evaluate expressions sequentially",
+        ),
+        (
+            "mapcar",
+            "(mapcar '${1:function} ${0})",
+            "Apply function to list elements",
+        ),
+        (
+            "vl-catch-all-apply",
+            "(vl-catch-all-apply '${1:function} (list ${0}))",
+            "Apply function with error trapping",
+        ),
+        (
+            "*error*",
+            "(defun *error* (msg)\n  ${0}\n  (princ)\n)",
+            "Error handler function",
+        ),
+        (
+            "ssget",
+            "(ssget \"${1:X}\" ${0})",
+            "Create selection set",
+        ),
+        (
+            "entget",
+            "(entget (car (entsel ${0})))",
+            "Get entity data from user selection",
+        ),
+    ];
+
+    SNIPPETS
+        .iter()
+        .filter(|(label, _, _)| {
+            prefix_upper.is_empty() || label.to_uppercase().starts_with(prefix_upper)
+        })
+        .map(|(label, body, detail)| CompletionItem {
+            label: label.to_string(),
+            kind: Some(CompletionItemKind::SNIPPET),
+            detail: Some(detail.to_string()),
+            insert_text: Some(body.to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            sort_text: Some(format!("0_{}", label)),
+            ..Default::default()
+        })
+        .collect()
 }

@@ -10,8 +10,9 @@ AutoCAD(およびBricsCAD)で使用されるAutoLISP言語のLanguage Server Pro
 | Find References | textDocument/references | シンボル使用箇所を一覧表示 |
 | Document Highlight | textDocument/documentHighlight | カーソル下のシンボルを同一ファイル内でハイライト (定義=Write / 参照=Read) |
 | Hover | textDocument/hover | 組み込み関数はシグネチャ+説明、ユーザー定義はdefunシグネチャ+doc |
-| Completion | textDocument/completion | 組み込み関数、ユーザー定義関数/変数、他ファイルの関数を補完 |
+| Completion | textDocument/completion | 組み込み関数、ユーザー定義関数/変数、他ファイルの関数、スニペット補完 |
 | Signature Help | textDocument/signatureHelp | 関数呼び出し中にパラメータ名とアクティブ引数をリアルタイム表示 |
+| Semantic Tokens | textDocument/semanticTokens/full | 関数・変数・パラメータ・キーワード・演算子等のセマンティックハイライト |
 | Formatting | textDocument/formatting | [Google Common Lisp Style Guide](https://google.github.io/styleguide/lispguide.xml)に準拠したフォーマット |
 | Range Formatting | textDocument/rangeFormatting | 選択範囲のみフォーマット |
 | Diagnostics | textDocument/publishDiagnostics | パースエラーをリアルタイム検出・表示 |
@@ -56,9 +57,11 @@ vim.api.nvim_create_autocmd("FileType", {
 
 ## 設定ファイル
 
-.autolisp-lsp.ymlで動作をカスタマイズできる。プロジェクトルートとホームディレクトリの2階層で読み込まれ、プロジェクト側が優先される。
+.autolisp-lsp.ymlで動作をカスタマイズできる
+プロジェクトルートとホームディレクトリの2階層で読み込まれ、プロジェクト側が優先される
 
-プロジェクトルートは、LSPクライアントがinitializeリクエストで送信するrootUriから取得される。通常はエディタで開いたワークスペース/フォルダのルートディレクトリが該当する。
+プロジェクトルートは、LSPクライアントがinitializeリクエストで送信するrootUriから取得される
+通常はエディタで開いたワークスペース/フォルダのルートディレクトリが該当する
 
 | 読み込み順 | パス | 優先度 |
 |-----------|------|--------|
@@ -80,8 +83,8 @@ format:
 |------|------|-----------|------|
 | lsp.enable | bool | true | false: LSP機能（定義ジャンプ、参照検索、ハイライト、ホバー、補完、シグネチャヘルプ、診断）を無効化 |
 | format.enable | bool | true | false: フォーマット機能（全体フォーマット、範囲フォーマット）を無効化 |
-| format.force-convert-case | bool | true | true: フォーマット時にシンボル名を小文字に変換（従来動作）。false: ソースコードの元のケースを保持 |
-| format.inline-comment-style | string | previous-line | 行末コメントの配置スタイル。previous-line / same-line / next-line |
+| format.force-convert-case | bool | true | true: フォーマット時にシンボル名を小文字に変換（従来動作）、false: ソースコードの元のケースを保持 |
+| format.inline-comment-style | string | previous-line | 行末コメントの配置スタイル、previous-line / same-line / next-line |
 
 ### 設定例
 
@@ -120,7 +123,7 @@ format:
 
 #### inline-comment-style
 
-行末コメント（インラインコメント）のフォーマット後の配置を制御する。
+行末コメント（インラインコメント）のフォーマット後の配置を制御する
 
 入力:
 ```lisp
@@ -178,8 +181,9 @@ src/
     ├── references.rs        Find References
     ├── highlight.rs         Document Highlight
     ├── hover.rs             Hover
-    ├── completion.rs        Completion
+    ├── completion.rs        Completion + Snippet
     ├── signature.rs         Signature Help
+    ├── semantic_tokens.rs   Semantic Tokens
     └── formatting.rs        Formatting / Range Formatting
 ```
 
@@ -209,7 +213,8 @@ AutoLISPは大文字小文字を区別しないため(SETQ = setq)、Lexerの段
 
 ### 組み込み関数DBの静的コンパイル
 
-関数情報 (シグネチャ、引数、説明、カテゴリ) を静的データとしてバイナリに埋め込むことで外部 JSONファイルの読み込みを不要とし、パフォーマンス向上に寄与させた
+関数情報 (シグネチャ、引数、説明、カテゴリ) を静的データとしてバイナリに埋め込むことで外部JSONファイルの読み込みを不要とし、パフォーマンス向上に寄与させた
+標準関数に加え、DCLダイアログ、ActiveX (VLAX)、リアクター (VLR) 等の関数もカバーしている
 
 ### 変更時の全文再パース
 

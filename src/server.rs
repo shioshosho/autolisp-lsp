@@ -55,6 +55,20 @@ impl LanguageServer for Backend {
                 }),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 document_range_formatting_provider: Some(OneOf::Left(true)),
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            legend: SemanticTokensLegend {
+                                token_types: features::semantic_tokens::TOKEN_TYPES.to_vec(),
+                                token_modifiers: features::semantic_tokens::TOKEN_MODIFIERS
+                                    .to_vec(),
+                            },
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                            range: None,
+                            ..Default::default()
+                        },
+                    ),
+                ),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -347,6 +361,31 @@ impl LanguageServer for Backend {
             Ok(None)
         } else {
             Ok(Some(edits))
+        }
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        if !self.config().lsp.enable {
+            return Ok(None);
+        }
+        let uri = params.text_document.uri;
+
+        let tokens = self
+            .documents
+            .get(&uri)
+            .map(|doc| features::semantic_tokens::semantic_tokens_full(&doc))
+            .unwrap_or_default();
+
+        if tokens.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+                result_id: None,
+                data: tokens,
+            })))
         }
     }
 }
