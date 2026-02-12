@@ -168,29 +168,48 @@ fn format_nodes(
     });
 
     let mut prev_end: Option<usize> = None;
+    // Track whether the previous item was a standalone (own-line) comment.
+    // Inline comments (same line as preceding node) are logically part of that node.
+    let mut prev_was_standalone_comment = false;
 
     for item in &items {
         match item {
             FormattedItem::Node(node) => {
-                // Add blank line between top-level forms
                 if prev_end.is_some() {
-                    output.push_str("\n\n");
+                    if prev_was_standalone_comment {
+                        // Comment is attached to this node — no blank line
+                        output.push('\n');
+                    } else {
+                        // Blank line between top-level forms
+                        output.push_str("\n\n");
+                    }
                 }
                 format_node(node, 0, comments, &mut output, original, config);
                 prev_end = Some(node.span().end);
+                prev_was_standalone_comment = false;
             }
             FormattedItem::Comment(comment) => {
-                if let Some(pe) = prev_end {
-                    // Check if comment was on the same line in original
+                let is_inline = if let Some(pe) = prev_end {
                     let between = &original[pe..comment.span().start];
                     if !between.contains('\n') {
+                        // Inline comment on the same line as the previous item
                         output.push(' ');
-                    } else {
+                        true
+                    } else if prev_was_standalone_comment {
+                        // Consecutive standalone comments
                         output.push('\n');
+                        false
+                    } else {
+                        // Standalone comment after a node — blank line to separate
+                        output.push_str("\n\n");
+                        false
                     }
-                }
+                } else {
+                    false
+                };
                 format_comment(comment, &mut output);
                 prev_end = Some(comment.span().end);
+                prev_was_standalone_comment = !is_inline;
             }
         }
     }
@@ -1134,6 +1153,61 @@ mod tests {
             result.contains("(setq a 1) ; comment"),
             "Comment should be on same line: {}",
             result
+        );
+    }
+
+    #[test]
+    fn test_toplevel_comment_before_node_no_blank_line() {
+        let input = "; about test\n(+ 1 2)\n";
+        let result = fmt(input);
+        assert_eq!(
+            result,
+            "; about test\n(+ 1 2)\n",
+            "No blank line between comment and its node"
+        );
+    }
+
+    #[test]
+    fn test_toplevel_node_comment_node_spacing() {
+        let input = "(+ 1 2)\n; about b\n(+ 3 4)\n";
+        let result = fmt(input);
+        assert_eq!(
+            result,
+            "(+ 1 2)\n\n; about b\n(+ 3 4)\n",
+            "Blank line before comment group, no blank line after"
+        );
+    }
+
+    #[test]
+    fn test_toplevel_consecutive_comments_before_node() {
+        let input = "; comment 1\n; comment 2\n(+ 1 2)\n";
+        let result = fmt(input);
+        assert_eq!(
+            result,
+            "; comment 1\n; comment 2\n(+ 1 2)\n",
+            "Consecutive comments before node without blank lines"
+        );
+    }
+
+    #[test]
+    fn test_toplevel_inline_comment_then_node() {
+        let input = "(+ 1 2) ; result\n(+ 3 4)\n";
+        let result = fmt(input);
+        assert_eq!(
+            result,
+            "(+ 1 2) ; result\n\n(+ 3 4)\n",
+            "Inline comment preserves blank line before next node"
+        );
+    }
+
+    #[test]
+    fn test_toplevel_node_node_blank_line() {
+        let input = "(+ 1 2)\n(+ 3 4)\n";
+        let result = fmt(input);
+        assert_eq!(
+            result,
+            "(+ 1 2)\n\n(+ 3 4)\n",
+            "Blank line between top-level nodes"
         );
     }
 }
