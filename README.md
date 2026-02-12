@@ -12,7 +12,7 @@ AutoCAD(およびBricsCAD)で使用されるAutoLISP言語のLanguage Server Pro
 | Hover | textDocument/hover | 組み込み関数はシグネチャ+説明、ユーザー定義はdefunシグネチャ+doc |
 | Completion | textDocument/completion | 組み込み関数、ユーザー定義関数/変数、他ファイルの関数を補完 |
 | Signature Help | textDocument/signatureHelp | 関数呼び出し中にパラメータ名とアクティブ引数をリアルタイム表示 |
-| Formatting | textDocument/formatting | ドキュメント全体を2スペースインデントでフォーマット |
+| Formatting | textDocument/formatting | [Google Common Lisp Style Guide](https://google.github.io/styleguide/lispguide.xml)に準拠したフォーマット |
 | Range Formatting | textDocument/rangeFormatting | 選択範囲のみフォーマット |
 | Diagnostics | textDocument/publishDiagnostics | パースエラーをリアルタイム検出・表示 |
 
@@ -54,12 +54,52 @@ vim.api.nvim_create_autocmd("FileType", {
 })
 ```
 
+## 設定ファイル
+
+.autolisp-lsp.ymlで動作をカスタマイズできる。プロジェクトルートとホームディレクトリの2階層で読み込まれ、プロジェクト側が優先される。
+
+プロジェクトルートは、LSPクライアントがinitializeリクエストで送信するrootUriから取得される。通常はエディタで開いたワークスペース/フォルダのルートディレクトリが該当する。
+
+| 読み込み順 | パス | 優先度 |
+|-----------|------|--------|
+| グローバル | $HOME/.autolisp-lsp.yml | 低 |
+| プロジェクト | <プロジェクトルート>/.autolisp-lsp.yml | 高 |
+
+### 設定項目
+
+```yaml
+format:
+  force-convert-case: true  # デフォルト: true
+```
+
+| キー | 型 | デフォルト | 説明 |
+|------|------|-----------|------|
+| format.force-convert-case | bool | true | true: フォーマット時にシンボル名を小文字に変換（従来動作）。false: ソースコードの元のケースを保持 |
+
+### 設定例
+
+元のケースを保持する場合:
+
+```yaml
+format:
+  force-convert-case: false
+```
+
+```lisp
+;; force-convert-case: true (デフォルト)
+(defun myfunc (param1 param2 / localvar) ...)
+
+;; force-convert-case: false
+(defun MyFunc (Param1 Param2 / LocalVar) ...)
+```
+
 ## アーキテクチャ
 
 ```
 src/
 ├── main.rs                  サーバー起動
 ├── server.rs                Backend + LanguageServer trait実装
+├── config.rs                設定ファイル読み込み (.autolisp-lsp.yml)
 ├── document.rs              テキスト・行オフセット・AST・シンボルテーブル
 ├── builtins.rs              組み込み関数DB
 ├── parser/

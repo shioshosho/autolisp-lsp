@@ -1,5 +1,6 @@
 use tower_lsp::lsp_types::*;
 
+use crate::config::FormatConfig;
 use crate::document::Document;
 use crate::parser::ast::AstNode;
 use crate::parser::token::Span;
@@ -24,15 +25,36 @@ fn distinguished_args_count(name: &str) -> usize {
     }
 }
 
+/// Resolve the display name for a symbol.
+/// When `force_convert_case` is true, returns `name.to_lowercase()`.
+/// When false, extracts the original text from the source using the span.
+fn format_symbol_name(original: &str, span: Span, name: &str, config: &FormatConfig) -> String {
+    if config.force_convert_case {
+        name.to_lowercase()
+    } else {
+        original[span.start..span.end].to_string()
+    }
+}
+
 /// Format a node into a temporary string for width measurement.
-fn format_node_to_string(node: &AstNode, indent: usize, comments: &[AstNode]) -> String {
+fn format_node_to_string(
+    node: &AstNode,
+    indent: usize,
+    comments: &[AstNode],
+    original: &str,
+    config: &FormatConfig,
+) -> String {
     let mut buf = String::new();
-    format_node(node, indent, comments, &mut buf);
+    format_node(node, indent, comments, &mut buf, original, config);
     buf
 }
 
-pub fn format_document(doc: &Document, _options: &FormattingOptions) -> Vec<TextEdit> {
-    let formatted = format_nodes(&doc.ast, &doc.comments, &doc.text);
+pub fn format_document(
+    doc: &Document,
+    _options: &FormattingOptions,
+    config: &FormatConfig,
+) -> Vec<TextEdit> {
+    let formatted = format_nodes(&doc.ast, &doc.comments, &doc.text, config);
     if formatted == doc.text {
         return vec![];
     }
@@ -46,7 +68,12 @@ pub fn format_document(doc: &Document, _options: &FormattingOptions) -> Vec<Text
     }]
 }
 
-pub fn format_range(doc: &Document, range: &Range, _options: &FormattingOptions) -> Vec<TextEdit> {
+pub fn format_range(
+    doc: &Document,
+    range: &Range,
+    _options: &FormattingOptions,
+    config: &FormatConfig,
+) -> Vec<TextEdit> {
     let start_offset = doc.position_to_offset(range.start);
     let end_offset = doc.position_to_offset(range.end);
 
@@ -72,7 +99,7 @@ pub fn format_range(doc: &Document, range: &Range, _options: &FormattingOptions)
         if i > 0 {
             output.push_str("\n\n");
         }
-        format_node(node, 0, &doc.comments, &mut output);
+        format_node(node, 0, &doc.comments, &mut output, &doc.text, config);
     }
     output.push('\n');
 
@@ -108,7 +135,12 @@ fn comments_in_range<'a>(comments: &'a [AstNode], start: usize, end: usize) -> V
         .collect()
 }
 
-fn format_nodes(nodes: &[AstNode], comments: &[AstNode], original: &str) -> String {
+fn format_nodes(
+    nodes: &[AstNode],
+    comments: &[AstNode],
+    original: &str,
+    config: &FormatConfig,
+) -> String {
     let mut output = String::new();
 
     // Collect all top-level items (nodes + top-level comments) sorted by position
@@ -144,7 +176,7 @@ fn format_nodes(nodes: &[AstNode], comments: &[AstNode], original: &str) -> Stri
                 if prev_end.is_some() {
                     output.push_str("\n\n");
                 }
-                format_node(node, 0, comments, &mut output);
+                format_node(node, 0, comments, &mut output, original, config);
                 prev_end = Some(node.span().end);
             }
             FormattedItem::Comment(comment) => {
@@ -182,7 +214,14 @@ fn format_comment(node: &AstNode, output: &mut String) {
     }
 }
 
-fn format_node(node: &AstNode, indent: usize, comments: &[AstNode], output: &mut String) {
+fn format_node(
+    node: &AstNode,
+    indent: usize,
+    comments: &[AstNode],
+    output: &mut String,
+    original: &str,
+    config: &FormatConfig,
+) {
     match node {
         AstNode::IntegerLit(v, _) => {
             output.push_str(&v.to_string());
@@ -204,38 +243,41 @@ fn format_node(node: &AstNode, indent: usize, comments: &[AstNode], output: &mut
             }
             output.push('"');
         }
-        AstNode::Symbol(name, _) => {
-            output.push_str(&name.to_lowercase());
+        AstNode::Symbol(name, span) => {
+            output.push_str(&format_symbol_name(original, *span, name, config));
         }
         AstNode::Nil(_) => output.push_str("nil"),
         AstNode::T(_) => output.push('T'),
         AstNode::Quote(inner, _) => {
             output.push('\'');
-            format_node(inner, indent, comments, output);
+            format_node(inner, indent, comments, output, original, config);
         }
         AstNode::DottedPair(car, cdr, _) => {
             output.push('(');
-            format_node(car, indent + 1, comments, output);
+            format_node(car, indent + 1, comments, output, original, config);
             output.push_str(" . ");
-            format_node(cdr, indent + 1, comments, output);
+            format_node(cdr, indent + 1, comments, output, original, config);
             output.push(')');
         }
         AstNode::Defun {
             name,
+            name_span,
             params,
             locals,
             body,
             doc_comment,
             span,
-            ..
         } => {
-            format_defun(name, params, locals, body, doc_comment, *span, indent, comments, output);
+            format_defun(
+                name, *name_span, params, locals, body, doc_comment, *span, indent, comments,
+                output, original, config,
+            );
         }
         AstNode::Lambda { params, body, span } => {
-            format_lambda(params, body, *span, indent, comments, output);
+            format_lambda(params, body, *span, indent, comments, output, original, config);
         }
         AstNode::List(elements, span) => {
-            format_list(elements, *span, indent, comments, output);
+            format_list(elements, *span, indent, comments, output, original, config);
         }
         AstNode::Comment(text, _) => {
             output.push(';');
@@ -257,6 +299,8 @@ fn format_body_with_comments(
     indent: usize,
     comments: &[AstNode],
     output: &mut String,
+    original: &str,
+    config: &FormatConfig,
 ) -> bool {
     let body_comments = comments_in_range(comments, parent_span.start, parent_span.end);
     let mut last_was_comment = false;
@@ -298,7 +342,7 @@ fn format_body_with_comments(
 
         output.push('\n');
         push_indent(output, indent);
-        format_node(expr, indent, comments, output);
+        format_node(expr, indent, comments, output, original, config);
         last_was_comment = false;
 
         // Check for inline comment on same line after expression
@@ -333,6 +377,7 @@ fn format_body_with_comments(
 
 fn format_defun(
     name: &str,
+    name_span: Span,
     params: &[(String, Span)],
     locals: &[(String, Span)],
     body: &[AstNode],
@@ -341,17 +386,19 @@ fn format_defun(
     indent: usize,
     comments: &[AstNode],
     output: &mut String,
+    original: &str,
+    config: &FormatConfig,
 ) {
     output.push_str("(defun ");
-    output.push_str(&name.to_lowercase());
+    output.push_str(&format_symbol_name(original, name_span, name, config));
     output.push_str(" (");
 
     // Parameters
-    for (i, (p, _)) in params.iter().enumerate() {
+    for (i, (p, p_span)) in params.iter().enumerate() {
         if i > 0 {
             output.push(' ');
         }
-        output.push_str(&p.to_lowercase());
+        output.push_str(&format_symbol_name(original, *p_span, p, config));
     }
 
     // Local variables
@@ -360,9 +407,9 @@ fn format_defun(
             output.push(' ');
         }
         output.push('/');
-        for (l, _) in locals {
+        for (l, l_span) in locals {
             output.push(' ');
-            output.push_str(&l.to_lowercase());
+            output.push_str(&format_symbol_name(original, *l_span, l, config));
         }
     }
 
@@ -399,7 +446,8 @@ fn format_defun(
         }
     }
 
-    let ends_with_comment = format_body_with_comments(body, body_span, body_indent, comments, output);
+    let ends_with_comment =
+        format_body_with_comments(body, body_span, body_indent, comments, output, original, config);
     if ends_with_comment {
         output.push('\n');
         push_indent(output, indent);
@@ -414,14 +462,16 @@ fn format_lambda(
     indent: usize,
     comments: &[AstNode],
     output: &mut String,
+    original: &str,
+    config: &FormatConfig,
 ) {
     output.push_str("(lambda (");
 
-    for (i, (p, _)) in params.iter().enumerate() {
+    for (i, (p, p_span)) in params.iter().enumerate() {
         if i > 0 {
             output.push(' ');
         }
-        output.push_str(&p.to_lowercase());
+        output.push_str(&format_symbol_name(original, *p_span, p, config));
     }
 
     output.push(')');
@@ -431,12 +481,13 @@ fn format_lambda(
 
     if body.len() == 1 && is_simple_expr(&body[0]) && !has_comments {
         output.push(' ');
-        format_node(&body[0], body_indent, comments, output);
+        format_node(&body[0], body_indent, comments, output, original, config);
         output.push(')');
     } else {
         let body_start = body.first().map(|b| b.span().start).unwrap_or(span.start);
         let body_span = Span::new(body_start, span.end);
-        let ends_with_comment = format_body_with_comments(body, body_span, body_indent, comments, output);
+        let ends_with_comment =
+            format_body_with_comments(body, body_span, body_indent, comments, output, original, config);
         if ends_with_comment {
             output.push('\n');
             push_indent(output, indent);
@@ -445,7 +496,15 @@ fn format_lambda(
     }
 }
 
-fn format_list(elements: &[AstNode], span: Span, indent: usize, comments: &[AstNode], output: &mut String) {
+fn format_list(
+    elements: &[AstNode],
+    span: Span,
+    indent: usize,
+    comments: &[AstNode],
+    output: &mut String,
+    original: &str,
+    config: &FormatConfig,
+) {
     if elements.is_empty() {
         output.push_str("()");
         return;
@@ -462,7 +521,7 @@ fn format_list(elements: &[AstNode], span: Span, indent: usize, comments: &[AstN
 
     // Try single-line format first (only if no comments inside)
     if !has_comments {
-        let single_line = format_list_single_line(elements, indent, comments);
+        let single_line = format_list_single_line(elements, indent, comments, original, config);
         if single_line.len() + indent <= LINE_LIMIT && !single_line.contains('\n') {
             output.push_str(&single_line);
             return;
@@ -472,10 +531,10 @@ fn format_list(elements: &[AstNode], span: Span, indent: usize, comments: &[AstN
     // Multi-line format: dispatch to special form or regular call
     if is_special {
         if let AstNode::Symbol(name, _) = &elements[0] {
-            format_list_special_form(name, elements, span, indent, comments, output);
+            format_list_special_form(name, elements, span, indent, comments, output, original, config);
         }
     } else {
-        format_list_regular_call(elements, span, indent, comments, output);
+        format_list_regular_call(elements, span, indent, comments, output, original, config);
     }
 }
 
@@ -489,18 +548,20 @@ fn format_list_special_form(
     indent: usize,
     comments: &[AstNode],
     output: &mut String,
+    original: &str,
+    config: &FormatConfig,
 ) {
     let dist_count = distinguished_args_count(name);
     let body_indent = indent + INDENT_SIZE;
 
     output.push('(');
-    format_node(&elements[0], indent + 1, comments, output);
+    format_node(&elements[0], indent + 1, comments, output, original, config);
 
     // Output distinguished args on the same line
     let dist_end = std::cmp::min(1 + dist_count, elements.len());
     for element in &elements[1..dist_end] {
         output.push(' ');
-        format_node(element, indent + 1, comments, output);
+        format_node(element, indent + 1, comments, output, original, config);
     }
 
     // Remaining body args on new lines
@@ -508,7 +569,8 @@ fn format_list_special_form(
         let body_elements = &elements[dist_end..];
         let body_start = body_elements.first().map(|b| b.span().start).unwrap_or(span.start);
         let body_span = Span::new(body_start, span.end);
-        let ends_with_comment = format_body_with_comments(body_elements, body_span, body_indent, comments, output);
+        let ends_with_comment =
+            format_body_with_comments(body_elements, body_span, body_indent, comments, output, original, config);
         if ends_with_comment {
             output.push('\n');
             push_indent(output, indent);
@@ -525,9 +587,11 @@ fn format_list_regular_call(
     indent: usize,
     comments: &[AstNode],
     output: &mut String,
+    original: &str,
+    config: &FormatConfig,
 ) {
     output.push('(');
-    format_node(&elements[0], indent + 1, comments, output);
+    format_node(&elements[0], indent + 1, comments, output, original, config);
 
     if elements.len() == 1 {
         output.push(')');
@@ -535,7 +599,7 @@ fn format_list_regular_call(
     }
 
     // Calculate alignment column: (func-name + space
-    let func_str = format_node_to_string(&elements[0], indent + 1, comments);
+    let func_str = format_node_to_string(&elements[0], indent + 1, comments, original, config);
     let align_col = indent + 1 + func_str.len() + 1; // ( + name + space
 
     // Fallback to indent+2 if alignment would be too deep
@@ -543,7 +607,7 @@ fn format_list_regular_call(
 
     // First arg on same line
     output.push(' ');
-    format_node(&elements[1], align_col, comments, output);
+    format_node(&elements[1], align_col, comments, output, original, config);
 
     // Remaining args aligned
     if elements.len() > 2 {
@@ -589,7 +653,7 @@ fn format_list_regular_call(
 
             output.push('\n');
             push_indent(output, align_col);
-            format_node(element, align_col, comments, output);
+            format_node(element, align_col, comments, output, original, config);
             last_was_comment = false;
         }
 
@@ -617,14 +681,20 @@ fn format_list_regular_call(
     output.push(')');
 }
 
-fn format_list_single_line(elements: &[AstNode], indent: usize, comments: &[AstNode]) -> String {
+fn format_list_single_line(
+    elements: &[AstNode],
+    indent: usize,
+    comments: &[AstNode],
+    original: &str,
+    config: &FormatConfig,
+) -> String {
     let mut out = String::new();
     out.push('(');
     for (i, element) in elements.iter().enumerate() {
         if i > 0 {
             out.push(' ');
         }
-        format_node(element, indent + 1, comments, &mut out);
+        format_node(element, indent + 1, comments, &mut out, original, config);
     }
     out.push(')');
     out
@@ -667,7 +737,7 @@ mod tests {
     fn test_format_japanese_string() {
         let input = "(setq ver \"DRCエラーラベル変更コマンド\")\n";
         let doc = Document::new(input.to_string());
-        let edits = format_document(&doc, &FormattingOptions::default());
+        let edits = format_document(&doc, &FormattingOptions::default(), &FormatConfig::default());
         if edits.is_empty() {
             // No changes means input is already correct
             assert!(input.contains("DRCエラーラベル変更コマンド"));
@@ -685,7 +755,7 @@ mod tests {
     fn test_format_japanese_comment() {
         let input = "; DRCエラーラベル変更コマンド\n(+ 1 2)\n";
         let doc = Document::new(input.to_string());
-        let edits = format_document(&doc, &FormattingOptions::default());
+        let edits = format_document(&doc, &FormattingOptions::default(), &FormatConfig::default());
         if edits.is_empty() {
             assert!(input.contains("DRCエラーラベル変更コマンド"));
         } else {
@@ -702,7 +772,7 @@ mod tests {
     fn test_format_japanese_in_defun() {
         let input = "(defun test (x)\n  ; 日本語コメント\n  (setq msg \"日本語テスト\")\n  msg\n)\n";
         let doc = Document::new(input.to_string());
-        let edits = format_document(&doc, &FormattingOptions::default());
+        let edits = format_document(&doc, &FormattingOptions::default(), &FormatConfig::default());
         if edits.is_empty() {
             assert!(input.contains("日本語コメント"));
             assert!(input.contains("日本語テスト"));
@@ -725,7 +795,7 @@ mod tests {
     fn test_format_crlf_strips_cr_from_comments() {
         let input = "; 日本語コメント\r\n(+ 1 2)\r\n";
         let doc = Document::new(input.to_string());
-        let edits = format_document(&doc, &FormattingOptions::default());
+        let edits = format_document(&doc, &FormattingOptions::default(), &FormatConfig::default());
         // CRLF input should produce LF-only output
         assert!(!edits.is_empty(), "CRLF should trigger formatting changes");
         let formatted = &edits[0].new_text;
@@ -745,7 +815,7 @@ mod tests {
     fn test_format_crlf_defun_comments() {
         let input = "(defun test (x)\r\n  ; 文字位置インデックス\r\n  (+ x 1)\r\n)\r\n";
         let doc = Document::new(input.to_string());
-        let edits = format_document(&doc, &FormattingOptions::default());
+        let edits = format_document(&doc, &FormattingOptions::default(), &FormatConfig::default());
         assert!(!edits.is_empty(), "CRLF should trigger formatting changes");
         let formatted = &edits[0].new_text;
         assert!(
@@ -763,7 +833,18 @@ mod tests {
     /// Helper to format input and return the result
     fn fmt(input: &str) -> String {
         let doc = Document::new(input.to_string());
-        let edits = format_document(&doc, &FormattingOptions::default());
+        let edits = format_document(&doc, &FormattingOptions::default(), &FormatConfig::default());
+        if edits.is_empty() {
+            input.to_string()
+        } else {
+            edits[0].new_text.clone()
+        }
+    }
+
+    /// Helper to format input with a given config and return the result
+    fn fmt_with_config(input: &str, config: &FormatConfig) -> String {
+        let doc = Document::new(input.to_string());
+        let edits = format_document(&doc, &FormattingOptions::default(), config);
         if edits.is_empty() {
             input.to_string()
         } else {
@@ -862,5 +943,66 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_format_preserve_case() {
+        let config = FormatConfig { force_convert_case: false };
+        let input = "(defun MyFunc (Param1 Param2 / LocalVar)\n  (setq LocalVar (+ Param1 Param2))\n  LocalVar)\n";
+        let result = fmt_with_config(input, &config);
+        assert!(
+            result.contains("MyFunc"),
+            "Function name should preserve original case: {}",
+            result
+        );
+        assert!(
+            result.contains("Param1"),
+            "Parameter should preserve original case: {}",
+            result
+        );
+        assert!(
+            result.contains("LocalVar"),
+            "Local variable should preserve original case: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_format_force_lowercase() {
+        let config = FormatConfig { force_convert_case: true };
+        let input = "(defun MyFunc (Param1 Param2 / LocalVar)\n  (setq LocalVar (+ Param1 Param2))\n  LocalVar)\n";
+        let result = fmt_with_config(input, &config);
+        assert!(
+            result.contains("myfunc"),
+            "Function name should be lowercased: {}",
+            result
+        );
+        assert!(
+            result.contains("param1"),
+            "Parameter should be lowercased: {}",
+            result
+        );
+        assert!(
+            result.contains("localvar"),
+            "Local variable should be lowercased: {}",
+            result
+        );
+        assert!(
+            !result.contains("MyFunc"),
+            "Original case should not appear: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_format_preserve_case_lambda() {
+        let config = FormatConfig { force_convert_case: false };
+        let input = "(lambda (MyParam) (+ MyParam 1))\n";
+        let result = fmt_with_config(input, &config);
+        assert!(
+            result.contains("MyParam"),
+            "Lambda parameter should preserve original case: {}",
+            result
+        );
     }
 }

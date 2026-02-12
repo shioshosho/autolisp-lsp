@@ -1,14 +1,18 @@
+use std::sync::OnceLock;
+
 use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
+use crate::config::{self, Config};
 use crate::document::Document;
 use crate::features;
 
 pub struct Backend {
     pub client: Client,
     pub documents: DashMap<Url, Document>,
+    pub config: OnceLock<Config>,
 }
 
 impl Backend {
@@ -16,13 +20,21 @@ impl Backend {
         Self {
             client,
             documents: DashMap::new(),
+            config: OnceLock::new(),
         }
     }
 }
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        let workspace_root = params
+            .root_uri
+            .as_ref()
+            .and_then(|uri| uri.to_file_path().ok());
+        let cfg = config::load_config(workspace_root.as_deref());
+        let _ = self.config.set(cfg);
+
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -277,11 +289,12 @@ impl LanguageServer for Backend {
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         let uri = params.text_document.uri;
+        let cfg = self.config.get().cloned().unwrap_or_default();
 
         let edits = self
             .documents
             .get(&uri)
-            .map(|doc| features::formatting::format_document(&doc, &params.options))
+            .map(|doc| features::formatting::format_document(&doc, &params.options, &cfg.format))
             .unwrap_or_default();
 
         if edits.is_empty() {
@@ -296,11 +309,14 @@ impl LanguageServer for Backend {
         params: DocumentRangeFormattingParams,
     ) -> Result<Option<Vec<TextEdit>>> {
         let uri = params.text_document.uri;
+        let cfg = self.config.get().cloned().unwrap_or_default();
 
         let edits = self
             .documents
             .get(&uri)
-            .map(|doc| features::formatting::format_range(&doc, &params.range, &params.options))
+            .map(|doc| {
+                features::formatting::format_range(&doc, &params.range, &params.options, &cfg.format)
+            })
             .unwrap_or_default();
 
         if edits.is_empty() {

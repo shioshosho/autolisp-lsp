@@ -1,5 +1,6 @@
 mod analysis;
 mod builtins;
+mod config;
 mod document;
 mod features;
 mod parser;
