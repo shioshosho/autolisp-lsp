@@ -2,6 +2,7 @@ use tower_lsp::lsp_types::*;
 
 use crate::document::Document;
 use crate::parser::ast::AstNode;
+use crate::parser::token::Span;
 
 const INDENT_SIZE: usize = 2;
 
@@ -52,7 +53,7 @@ pub fn format_range(doc: &Document, range: &Range, _options: &FormattingOptions)
         if i > 0 {
             output.push_str("\n\n");
         }
-        format_node(node, 0, &mut output);
+        format_node(node, 0, &doc.comments, &mut output);
     }
     output.push('\n');
 
@@ -77,17 +78,37 @@ pub fn format_range(doc: &Document, range: &Range, _options: &FormattingOptions)
     }]
 }
 
+/// Filter comments whose start falls within the given span range [start, end).
+fn comments_in_range<'a>(comments: &'a [AstNode], start: usize, end: usize) -> Vec<&'a AstNode> {
+    comments
+        .iter()
+        .filter(|c| {
+            let cs = c.span().start;
+            cs >= start && cs < end
+        })
+        .collect()
+}
+
 fn format_nodes(nodes: &[AstNode], comments: &[AstNode], original: &str) -> String {
     let mut output = String::new();
 
-    // Collect all top-level items (nodes + comments) sorted by position
+    // Collect all top-level items (nodes + top-level comments) sorted by position
     let mut items: Vec<FormattedItem> = Vec::new();
 
     for node in nodes {
         items.push(FormattedItem::Node(node));
     }
+    // Only include top-level comments (those not inside any AST node's span).
+    // Comments inside defun/lambda bodies are handled by format_body_with_comments.
     for comment in comments {
-        items.push(FormattedItem::Comment(comment));
+        let cs = comment.span().start;
+        let inside_node = nodes.iter().any(|n| {
+            let s = n.span();
+            cs >= s.start && cs < s.end
+        });
+        if !inside_node {
+            items.push(FormattedItem::Comment(comment));
+        }
     }
 
     items.sort_by_key(|item| match item {
@@ -104,7 +125,7 @@ fn format_nodes(nodes: &[AstNode], comments: &[AstNode], original: &str) -> Stri
                 if prev_end.is_some() {
                     output.push_str("\n\n");
                 }
-                format_node(node, 0, &mut output);
+                format_node(node, 0, comments, &mut output);
                 prev_end = Some(node.span().end);
             }
             FormattedItem::Comment(comment) => {
@@ -136,19 +157,13 @@ enum FormattedItem<'a> {
 }
 
 fn format_comment(node: &AstNode, output: &mut String) {
-    match node {
-        AstNode::Comment(text, _) => {
-            // Determine if it's a block comment based on content
-            // Block comments in our AST were parsed from ;| ... |;
-            // For now, just output as line comment
-            output.push(';');
-            output.push_str(text);
-        }
-        _ => {}
+    if let AstNode::Comment(text, _) = node {
+        output.push(';');
+        output.push_str(text);
     }
 }
 
-fn format_node(node: &AstNode, indent: usize, output: &mut String) {
+fn format_node(node: &AstNode, indent: usize, comments: &[AstNode], output: &mut String) {
     match node {
         AstNode::IntegerLit(v, _) => {
             output.push_str(&v.to_string());
@@ -177,13 +192,13 @@ fn format_node(node: &AstNode, indent: usize, output: &mut String) {
         AstNode::T(_) => output.push('T'),
         AstNode::Quote(inner, _) => {
             output.push('\'');
-            format_node(inner, indent, output);
+            format_node(inner, indent, comments, output);
         }
         AstNode::DottedPair(car, cdr, _) => {
             output.push('(');
-            format_node(car, indent + 1, output);
+            format_node(car, indent + 1, comments, output);
             output.push_str(" . ");
-            format_node(cdr, indent + 1, output);
+            format_node(cdr, indent + 1, comments, output);
             output.push(')');
         }
         AstNode::Defun {
@@ -192,15 +207,16 @@ fn format_node(node: &AstNode, indent: usize, output: &mut String) {
             locals,
             body,
             doc_comment,
+            span,
             ..
         } => {
-            format_defun(name, params, locals, body, doc_comment, indent, output);
+            format_defun(name, params, locals, body, doc_comment, *span, indent, comments, output);
         }
-        AstNode::Lambda { params, body, .. } => {
-            format_lambda(params, body, indent, output);
+        AstNode::Lambda { params, body, span } => {
+            format_lambda(params, body, *span, indent, comments, output);
         }
-        AstNode::List(elements, _) => {
-            format_list(elements, indent, output);
+        AstNode::List(elements, span) => {
+            format_list(elements, *span, indent, comments, output);
         }
         AstNode::Comment(text, _) => {
             output.push(';');
@@ -213,13 +229,90 @@ fn format_node(node: &AstNode, indent: usize, output: &mut String) {
     }
 }
 
+/// Format a sequence of body expressions, interleaving any comments that fall
+/// between them. Each element is placed on its own line at the given indent.
+fn format_body_with_comments(
+    elements: &[AstNode],
+    parent_span: Span,
+    indent: usize,
+    comments: &[AstNode],
+    output: &mut String,
+) {
+    let body_comments = comments_in_range(comments, parent_span.start, parent_span.end);
+
+    if elements.is_empty() {
+        // Only comments in the body
+        for c in &body_comments {
+            output.push('\n');
+            push_indent(output, indent);
+            format_comment(c, output);
+        }
+        return;
+    }
+
+    // Track which comments have been emitted
+    let mut comment_idx = 0;
+
+    for (i, expr) in elements.iter().enumerate() {
+        let expr_start = expr.span().start;
+
+        // Emit comments that come before this expression
+        while comment_idx < body_comments.len()
+            && body_comments[comment_idx].span().start < expr_start
+        {
+            output.push('\n');
+            push_indent(output, indent);
+            format_comment(body_comments[comment_idx], output);
+            comment_idx += 1;
+        }
+
+        // Skip comments that overlap with the expression (already inside it)
+        while comment_idx < body_comments.len()
+            && body_comments[comment_idx].span().start < expr.span().end
+        {
+            comment_idx += 1;
+        }
+
+        output.push('\n');
+        push_indent(output, indent);
+        format_node(expr, indent, comments, output);
+
+        // Check for inline comment on same line after expression
+        // (comment that starts right after expression, before next newline)
+        if comment_idx < body_comments.len() {
+            let next_elem_start = if i + 1 < elements.len() {
+                elements[i + 1].span().start
+            } else {
+                parent_span.end
+            };
+            let cc = body_comments[comment_idx];
+            let cs = cc.span().start;
+            if cs >= expr.span().end && cs < next_elem_start {
+                // Check if there are no body expressions between this comment
+                // and the current one, suggesting it's an inline comment
+                // We just emit it on the next line for simplicity
+            }
+        }
+    }
+
+    // Emit trailing comments after the last expression
+    while comment_idx < body_comments.len() {
+        output.push('\n');
+        push_indent(output, indent);
+        format_comment(body_comments[comment_idx], output);
+        comment_idx += 1;
+    }
+}
+
 fn format_defun(
     name: &str,
-    params: &[(String, crate::parser::token::Span)],
-    locals: &[(String, crate::parser::token::Span)],
+    params: &[(String, Span)],
+    locals: &[(String, Span)],
     body: &[AstNode],
     doc_comment: &Option<String>,
+    span: Span,
     indent: usize,
+    comments: &[AstNode],
     output: &mut String,
 ) {
     output.push_str("(defun ");
@@ -259,12 +352,18 @@ fn format_defun(
         output.push('"');
     }
 
-    // Body
-    for expr in body {
-        output.push('\n');
-        push_indent(output, body_indent);
-        format_node(expr, body_indent, output);
-    }
+    // Body with interleaved comments
+    // Determine the range for body comments: after param list closing paren to defun closing paren.
+    // Use the end of the last param/local as the lower bound so that comments between
+    // the param list and first body expression are included.
+    let after_params = locals
+        .last()
+        .map(|(_, s)| s.end)
+        .or_else(|| params.last().map(|(_, s)| s.end))
+        .unwrap_or(span.start);
+    let body_span = Span::new(after_params, span.end);
+
+    format_body_with_comments(body, body_span, body_indent, comments, output);
 
     output.push('\n');
     push_indent(output, indent);
@@ -272,9 +371,11 @@ fn format_defun(
 }
 
 fn format_lambda(
-    params: &[(String, crate::parser::token::Span)],
+    params: &[(String, Span)],
     body: &[AstNode],
+    span: Span,
     indent: usize,
+    comments: &[AstNode],
     output: &mut String,
 ) {
     output.push_str("(lambda (");
@@ -289,24 +390,23 @@ fn format_lambda(
     output.push(')');
 
     let body_indent = indent + INDENT_SIZE;
+    let has_comments = !comments_in_range(comments, span.start, span.end).is_empty();
 
-    if body.len() == 1 && is_simple_expr(&body[0]) {
+    if body.len() == 1 && is_simple_expr(&body[0]) && !has_comments {
         output.push(' ');
-        format_node(&body[0], body_indent, output);
+        format_node(&body[0], body_indent, comments, output);
         output.push(')');
     } else {
-        for expr in body {
-            output.push('\n');
-            push_indent(output, body_indent);
-            format_node(expr, body_indent, output);
-        }
+        let body_start = body.first().map(|b| b.span().start).unwrap_or(span.start);
+        let body_span = Span::new(body_start, span.end);
+        format_body_with_comments(body, body_span, body_indent, comments, output);
         output.push('\n');
         push_indent(output, indent);
         output.push(')');
     }
 }
 
-fn format_list(elements: &[AstNode], indent: usize, output: &mut String) {
+fn format_list(elements: &[AstNode], span: Span, indent: usize, comments: &[AstNode], output: &mut String) {
     if elements.is_empty() {
         output.push_str("()");
         return;
@@ -319,28 +419,86 @@ fn format_list(elements: &[AstNode], indent: usize, output: &mut String) {
         false
     };
 
-    // Try single-line format first
-    let single_line = format_list_single_line(elements, indent);
-    if single_line.len() + indent <= 80 && !single_line.contains('\n') {
-        output.push_str(&single_line);
-        return;
+    let has_comments = !comments_in_range(comments, span.start, span.end).is_empty();
+
+    // Try single-line format first (only if no comments inside)
+    if !has_comments {
+        let single_line = format_list_single_line(elements, indent, comments);
+        if single_line.len() + indent <= 80 && !single_line.contains('\n') {
+            output.push_str(&single_line);
+            return;
+        }
     }
 
     // Multi-line format
     output.push('(');
-    format_node(&elements[0], indent + 1, output);
+    format_node(&elements[0], indent + 1, comments, output);
 
     let body_indent = if is_special {
         indent + INDENT_SIZE
     } else {
-        // Align with first argument
         indent + INDENT_SIZE
     };
 
-    for element in &elements[1..] {
-        output.push('\n');
-        push_indent(output, body_indent);
-        format_node(element, body_indent, output);
+    if elements.len() > 1 {
+        // Get comments that belong inside this list but not inside child nodes
+        let list_comments = comments_in_range(comments, span.start, span.end);
+        let mut comment_idx = 0;
+
+        // Skip comments before or inside the first element
+        while comment_idx < list_comments.len()
+            && list_comments[comment_idx].span().start < elements[0].span().end
+        {
+            comment_idx += 1;
+        }
+
+        for (i, element) in elements[1..].iter().enumerate() {
+            let elem_start = element.span().start;
+
+            // Emit comments before this element
+            while comment_idx < list_comments.len()
+                && list_comments[comment_idx].span().start < elem_start
+            {
+                // Only emit if not inside a sibling element
+                let cs = list_comments[comment_idx].span().start;
+                let inside_sibling = elements.iter().any(|e| {
+                    let es = e.span();
+                    cs >= es.start && cs < es.end
+                });
+                if !inside_sibling {
+                    output.push('\n');
+                    push_indent(output, body_indent);
+                    format_comment(list_comments[comment_idx], output);
+                }
+                comment_idx += 1;
+            }
+
+            // Skip comments inside this element
+            while comment_idx < list_comments.len()
+                && list_comments[comment_idx].span().start < element.span().end
+            {
+                comment_idx += 1;
+            }
+
+            output.push('\n');
+            push_indent(output, body_indent);
+            format_node(element, body_indent, comments, output);
+        }
+
+        // Trailing comments
+        while comment_idx < list_comments.len() {
+            let cs = list_comments[comment_idx].span().start;
+            let inside_child = elements.iter().any(|e| {
+                let es = e.span();
+                cs >= es.start && cs < es.end
+            });
+            if !inside_child {
+                output.push('\n');
+                push_indent(output, body_indent);
+                format_comment(list_comments[comment_idx], output);
+            }
+            comment_idx += 1;
+        }
     }
 
     output.push('\n');
@@ -348,14 +506,14 @@ fn format_list(elements: &[AstNode], indent: usize, output: &mut String) {
     output.push(')');
 }
 
-fn format_list_single_line(elements: &[AstNode], indent: usize) -> String {
+fn format_list_single_line(elements: &[AstNode], indent: usize, comments: &[AstNode]) -> String {
     let mut out = String::new();
     out.push('(');
     for (i, element) in elements.iter().enumerate() {
         if i > 0 {
             out.push(' ');
         }
-        format_node(element, indent + 1, &mut out);
+        format_node(element, indent + 1, comments, &mut out);
     }
     out.push(')');
     out
