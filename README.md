@@ -68,17 +68,38 @@ vim.api.nvim_create_autocmd("FileType", {
 ### 設定項目
 
 ```yaml
+lsp:
+  enable: true                       # デフォルト: true
 format:
-  force-convert-case: true        # デフォルト: true
+  enable: true                       # デフォルト: true
+  force-convert-case: true           # デフォルト: true
   inline-comment-style: previous-line  # デフォルト: previous-line
 ```
 
 | キー | 型 | デフォルト | 説明 |
 |------|------|-----------|------|
+| lsp.enable | bool | true | false: LSP機能（定義ジャンプ、参照検索、ハイライト、ホバー、補完、シグネチャヘルプ、診断）を無効化 |
+| format.enable | bool | true | false: フォーマット機能（全体フォーマット、範囲フォーマット）を無効化 |
 | format.force-convert-case | bool | true | true: フォーマット時にシンボル名を小文字に変換（従来動作）。false: ソースコードの元のケースを保持 |
 | format.inline-comment-style | string | previous-line | 行末コメントの配置スタイル。previous-line / same-line / next-line |
 
 ### 設定例
+
+#### lsp.enable / format.enable
+
+フォーマッタのみ使用し、LSP機能（補完・診断など）を無効化する場合:
+
+```yaml
+lsp:
+  enable: false
+```
+
+LSP機能のみ使用し、フォーマッタを無効化する場合:
+
+```yaml
+format:
+  enable: false
+```
 
 #### force-convert-case
 

@@ -105,6 +105,9 @@ impl LanguageServer for Backend {
         &self,
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
+        if !self.config().lsp.enable {
+            return Ok(None);
+        }
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
@@ -145,6 +148,9 @@ impl LanguageServer for Backend {
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        if !self.config().lsp.enable {
+            return Ok(None);
+        }
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
         let include_declaration = params.context.include_declaration;
@@ -194,6 +200,9 @@ impl LanguageServer for Backend {
         &self,
         params: DocumentHighlightParams,
     ) -> Result<Option<Vec<DocumentHighlight>>> {
+        if !self.config().lsp.enable {
+            return Ok(None);
+        }
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
@@ -211,6 +220,9 @@ impl LanguageServer for Backend {
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        if !self.config().lsp.enable {
+            return Ok(None);
+        }
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
@@ -223,6 +235,9 @@ impl LanguageServer for Backend {
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        if !self.config().lsp.enable {
+            return Ok(None);
+        }
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
 
@@ -276,6 +291,9 @@ impl LanguageServer for Backend {
     }
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+        if !self.config().lsp.enable {
+            return Ok(None);
+        }
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
@@ -288,6 +306,9 @@ impl LanguageServer for Backend {
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        if !self.config().format.enable {
+            return Ok(None);
+        }
         let uri = params.text_document.uri;
         let cfg = self.config.get().cloned().unwrap_or_default();
 
@@ -308,6 +329,9 @@ impl LanguageServer for Backend {
         &self,
         params: DocumentRangeFormattingParams,
     ) -> Result<Option<Vec<TextEdit>>> {
+        if !self.config().format.enable {
+            return Ok(None);
+        }
         let uri = params.text_document.uri;
         let cfg = self.config.get().cloned().unwrap_or_default();
 
@@ -328,7 +352,17 @@ impl LanguageServer for Backend {
 }
 
 impl Backend {
+    fn config(&self) -> &Config {
+        self.config.get().expect("config not initialized")
+    }
+
     async fn publish_diagnostics(&self, uri: &Url, doc: &Document) {
+        if !self.config().lsp.enable {
+            self.client
+                .publish_diagnostics(uri.clone(), vec![], None)
+                .await;
+            return;
+        }
         let errors = crate::analysis::collect_errors(&doc.ast);
         let diagnostics: Vec<Diagnostic> = errors
             .into_iter()

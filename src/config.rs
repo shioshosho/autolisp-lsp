@@ -5,13 +5,30 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     #[serde(default)]
+    pub lsp: LspConfig,
+    #[serde(default)]
     pub format: FormatConfig,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
+            lsp: LspConfig::default(),
             format: FormatConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LspConfig {
+    #[serde(default = "default_true")]
+    pub enable: bool,
+}
+
+impl Default for LspConfig {
+    fn default() -> Self {
+        Self {
+            enable: default_true(),
         }
     }
 }
@@ -34,6 +51,8 @@ impl Default for InlineCommentStyle {
 #[serde(rename_all = "kebab-case")]
 pub struct FormatConfig {
     #[serde(default = "default_true")]
+    pub enable: bool,
+    #[serde(default = "default_true")]
     pub force_convert_case: bool,
     #[serde(default)]
     pub inline_comment_style: InlineCommentStyle,
@@ -42,6 +61,7 @@ pub struct FormatConfig {
 impl Default for FormatConfig {
     fn default() -> Self {
         Self {
+            enable: default_true(),
             force_convert_case: default_true(),
             inline_comment_style: InlineCommentStyle::default(),
         }
@@ -115,6 +135,37 @@ mod tests {
         let yaml = "format: {}\n";
         let cfg: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(cfg.format.force_convert_case);
+    }
+
+    #[test]
+    fn test_config_lsp_enable_default() {
+        let cfg = Config::default();
+        assert!(cfg.lsp.enable);
+        assert!(cfg.format.enable);
+    }
+
+    #[test]
+    fn test_config_lsp_enable_false() {
+        let yaml = "lsp:\n  enable: false\n";
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(!cfg.lsp.enable);
+        assert!(cfg.format.enable);
+    }
+
+    #[test]
+    fn test_config_format_enable_false() {
+        let yaml = "format:\n  enable: false\n";
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(cfg.lsp.enable);
+        assert!(!cfg.format.enable);
+    }
+
+    #[test]
+    fn test_config_both_disabled() {
+        let yaml = "lsp:\n  enable: false\nformat:\n  enable: false\n";
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(!cfg.lsp.enable);
+        assert!(!cfg.format.enable);
     }
 
     #[test]
