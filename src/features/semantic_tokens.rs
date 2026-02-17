@@ -132,8 +132,10 @@ fn collect_tokens_from_node(node: &AstNode, doc: &Document, tokens: &mut Vec<Raw
             span,
             ..
         } => {
-            // "defun" keyword
-            if let Some(kw_span) = find_keyword_span(&doc.text, span.start, "defun") {
+            // "defun" or "defun-q" keyword
+            let kw_span = find_keyword_span(&doc.text, span.start, "defun-q")
+                .or_else(|| find_keyword_span(&doc.text, span.start, "defun"));
+            if let Some(kw_span) = kw_span {
                 tokens.push(RawToken {
                     span: kw_span,
                     token_type: TT_KEYWORD,
@@ -283,8 +285,25 @@ fn is_keyword(upper: &str) -> bool {
 fn is_operator(upper: &str) -> bool {
     matches!(
         upper,
-        "+" | "-" | "*" | "/" | "=" | "/=" | "<" | ">" | "<=" | ">=" | "1+" | "1-" | "~" | "EQ"
+        "+" | "-"
+            | "*"
+            | "/"
+            | "="
+            | "/="
+            | "<"
+            | ">"
+            | "<="
+            | ">="
+            | "1+"
+            | "1-"
+            | "~"
+            | "EQ"
             | "EQUAL"
+            | "LOGAND"
+            | "LOGIOR"
+            | "LSH"
+            | "BOOLE"
+            | "REM"
     )
 }
 
@@ -453,5 +472,33 @@ mod tests {
         assert!(span.is_some());
         let s = span.unwrap();
         assert_eq!(&text[s.start..s.end], "DEFUN");
+    }
+
+    #[test]
+    fn test_find_keyword_span_defun_q() {
+        let text = "(defun-q foo () nil)";
+        let span = find_keyword_span(text, 0, "defun-q");
+        assert!(span.is_some());
+        let s = span.unwrap();
+        assert_eq!(&text[s.start..s.end], "defun-q");
+    }
+
+    #[test]
+    fn test_defun_q_keyword_token() {
+        let doc = Document::new("(defun-q test (a) a)".to_string());
+        let tokens = semantic_tokens_full(&doc);
+        // First token should be defun-q as keyword
+        assert!(!tokens.is_empty());
+        assert_eq!(tokens[0].token_type, TT_KEYWORD);
+        // defun-q is 7 chars
+        assert_eq!(tokens[0].length, 7);
+    }
+
+    #[test]
+    fn test_bitwise_operator_tokens() {
+        let doc = Document::new("(logand 7 3)".to_string());
+        let tokens = semantic_tokens_full(&doc);
+        assert!(!tokens.is_empty());
+        assert_eq!(tokens[0].token_type, TT_OPERATOR);
     }
 }
