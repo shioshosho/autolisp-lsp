@@ -5,6 +5,26 @@ use crate::document::Document;
 use crate::parser::ast::AstNode;
 use crate::parser::token::Span;
 
+/// Check if the AST contains any error nodes (e.g. unterminated lists/defuns).
+/// When errors exist, formatting should be skipped to avoid losing source code.
+fn has_errors(nodes: &[AstNode]) -> bool {
+    nodes.iter().any(|node| has_errors_in_node(node))
+}
+
+fn has_errors_in_node(node: &AstNode) -> bool {
+    match node {
+        AstNode::Error(_, _) => true,
+        AstNode::List(elements, _) => elements.iter().any(|e| has_errors_in_node(e)),
+        AstNode::Defun { body, .. } => body.iter().any(|e| has_errors_in_node(e)),
+        AstNode::Lambda { body, .. } => body.iter().any(|e| has_errors_in_node(e)),
+        AstNode::Quote(inner, _) => has_errors_in_node(inner),
+        AstNode::DottedPair(car, cdr, _) => {
+            has_errors_in_node(car) || has_errors_in_node(cdr)
+        }
+        _ => false,
+    }
+}
+
 const INDENT_SIZE: usize = 2;
 const LINE_LIMIT: usize = 100;
 
@@ -54,6 +74,11 @@ pub fn format_document(
     _options: &FormattingOptions,
     config: &FormatConfig,
 ) -> Vec<TextEdit> {
+    // Skip formatting when the AST contains errors (e.g. unclosed parentheses)
+    // to avoid losing source code. Diagnostics will show the parse errors.
+    if has_errors(&doc.ast) {
+        return vec![];
+    }
     let formatted = format_nodes(&doc.ast, &doc.comments, &doc.text, config);
     if formatted == doc.text {
         return vec![];
@@ -74,6 +99,10 @@ pub fn format_range(
     _options: &FormattingOptions,
     config: &FormatConfig,
 ) -> Vec<TextEdit> {
+    // Skip formatting when the AST contains errors (e.g. unclosed parentheses)
+    if has_errors(&doc.ast) {
+        return vec![];
+    }
     let start_offset = doc.position_to_offset(range.start);
     let end_offset = doc.position_to_offset(range.end);
 
@@ -1304,6 +1333,54 @@ mod tests {
             result,
             "(setq a 1)\n\n; about b\n(setq b 2)\n",
             "setq with comment and blank line: preserve blank line"
+        );
+    }
+
+    #[test]
+    fn test_format_unclosed_paren_preserves_source() {
+        // Unclosed parenthesis: formatting should return the original text unchanged
+        let input = "(defun test (x)\n  (+ x 1)\n";
+        let result = fmt(input);
+        assert_eq!(
+            result, input,
+            "Unclosed paren should preserve original source"
+        );
+    }
+
+    #[test]
+    fn test_format_unclosed_list_preserves_source() {
+        let input = "(setq a (+ 1 2)\n(setq b 3)\n";
+        let result = fmt(input);
+        assert_eq!(
+            result, input,
+            "Unclosed list should preserve original source"
+        );
+    }
+
+    #[test]
+    fn test_format_unclosed_nested_preserves_source() {
+        // Multiple valid forms followed by an unclosed one
+        let input = "(setq a 1)\n(defun test (x)\n  (if (> x 0)\n    (+ x 1)\n";
+        let result = fmt(input);
+        assert_eq!(
+            result, input,
+            "Unclosed nested expression should preserve original source"
+        );
+    }
+
+    #[test]
+    fn test_format_valid_code_still_formats() {
+        // Ensure valid code is still formatted correctly
+        let input = "(defun test (x)\n(+ x 1)\n)\n";
+        let result = fmt(input);
+        assert_ne!(
+            result, input,
+            "Valid code should still be formatted"
+        );
+        assert!(
+            result.contains("(defun test (x)"),
+            "Formatted result should contain defun: {}",
+            result
         );
     }
 }
