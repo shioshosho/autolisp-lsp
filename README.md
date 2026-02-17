@@ -42,11 +42,25 @@ settings.jsonで以下のようにサーバーを指定:
 }
 ```
 
-### Neovim (nvim-lspconfig)
+### Neovim
+
+filetype設定:
+
+```lua
+-- ~/.config/nvim/filetype.lua
+vim.filetype.add({
+  extension = {
+    lsp = "autolisp",
+    mnl = "autolisp",
+  },
+})
+```
+
+LSP設定:
 
 ```lua
 vim.api.nvim_create_autocmd("FileType", {
-  pattern = "lisp",  -- .lsp ファイルを lisp filetype にマッピング
+  pattern = "autolisp",
   callback = function()
     vim.lsp.start({
       name = "autolisp-lsp",
@@ -55,6 +69,8 @@ vim.api.nvim_create_autocmd("FileType", {
   end,
 })
 ```
+
+tree-sitter-autolispと組み合わせることでシンタックスハイライト・コード折りたたみ等も利用可能。設定方法は[tree-sitter-autolisp](https://github.com/shioshosho/tree-sitter-autolisp)を参照。
 
 ## 設定ファイル
 
