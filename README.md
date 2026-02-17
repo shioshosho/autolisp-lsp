@@ -12,6 +12,7 @@ AutoCAD(およびBricsCAD)で使用されるAutoLISP言語のLanguage Server Pro
 | Hover | textDocument/hover | 組み込み関数はシグネチャ+説明、ユーザー定義はdefunシグネチャ+doc |
 | Completion | textDocument/completion | 組み込み関数、ユーザー定義関数/変数、他ファイルの関数、スニペット補完 |
 | Signature Help | textDocument/signatureHelp | 関数呼び出し中にパラメータ名とアクティブ引数をリアルタイム表示 |
+| Document Symbol | textDocument/documentSymbol | ファイル内のシンボル一覧（defun・トップレベル変数）を階層的に返却、ブレッドクラム・アウトライン対応 |
 | Semantic Tokens | textDocument/semanticTokens/full | 関数・変数・パラメータ・キーワード・演算子等のセマンティックハイライト |
 | Formatting | textDocument/formatting | [Google Common Lisp Style Guide](https://google.github.io/styleguide/lispguide.xml)に準拠したフォーマット |
 | Range Formatting | textDocument/rangeFormatting | 選択範囲のみフォーマット |
@@ -183,6 +184,7 @@ src/
     ├── hover.rs             Hover
     ├── completion.rs        Completion + Snippet
     ├── signature.rs         Signature Help
+    ├── document_symbol.rs   Document Symbol
     ├── semantic_tokens.rs   Semantic Tokens
     └── formatting.rs        Formatting / Range Formatting
 ```

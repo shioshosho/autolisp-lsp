@@ -1,5 +1,6 @@
 pub mod completion;
 pub mod definition;
+pub mod document_symbol;
 pub mod formatting;
 pub mod highlight;
 pub mod hover;

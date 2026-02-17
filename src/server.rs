@@ -53,6 +53,7 @@ impl LanguageServer for Backend {
                     retrigger_characters: Some(vec![" ".to_string()]),
                     ..Default::default()
                 }),
+                document_symbol_provider: Some(OneOf::Left(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 document_range_formatting_provider: Some(OneOf::Left(true)),
                 semantic_tokens_provider: Some(
@@ -317,6 +318,28 @@ impl LanguageServer for Backend {
             .and_then(|doc| features::signature::signature_help(&doc, position));
 
         Ok(result)
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        if !self.config().lsp.enable {
+            return Ok(None);
+        }
+        let uri = params.text_document.uri;
+
+        let symbols = self
+            .documents
+            .get(&uri)
+            .map(|doc| features::document_symbol::document_symbol(&doc))
+            .unwrap_or_default();
+
+        if symbols.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+        }
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
